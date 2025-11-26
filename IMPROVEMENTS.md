@@ -306,10 +306,10 @@
 - Detailed logging
 
 ### Phase 3 (Features - Week 3)
-- Menu bar app
-- Advanced filtering
-- Undo system
-- CLI interface
+- ✅ Undo system - **COMPLETED**: Implemented UndoManager with undo for Trash deletions
+- ✅ Advanced filtering - **COMPLETED**: Deletion log has search, category, and time range filters
+- ⏳ Menu bar app - **PENDING**: Not yet implemented
+- ⏳ CLI interface - **PENDING**: Not yet implemented
 
 ### Phase 4 (Polish - Week 4)
 - Accessibility improvements

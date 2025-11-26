@@ -231,6 +231,7 @@ struct AdvancedPreferencesView: View {
     @State private var showDeletionLog = false
     @State private var showExportSettings = false
     @State private var showImportSettings = false
+    @State private var showProtectedPathPicker = false
     
     var body: some View {
         Form {
@@ -285,6 +286,46 @@ struct AdvancedPreferencesView: View {
                 Text("View detailed log of all deleted files with timestamps and paths.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            Text("View detailed log of all deleted files with timestamps and paths.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Section("Protected Paths") {
+                if preferencesManager.preferences.protectedPaths.isEmpty {
+                    Text("No protected paths added.")
+                        .foregroundColor(.secondary)
+                        .italic()
+                } else {
+                    ForEach(preferencesManager.preferences.protectedPaths, id: \.self) { path in
+                        HStack {
+                            Image(systemName: "folder.fill")
+                                .foregroundColor(.blue)
+                            Text(path)
+                                .truncationMode(.middle)
+                                .lineLimit(1)
+                            Spacer()
+                            Button(action: {
+                                if let index = preferencesManager.preferences.protectedPaths.firstIndex(of: path) {
+                                    preferencesManager.preferences.protectedPaths.remove(at: index)
+                                    preferencesManager.save()
+                                }
+                            }) {
+                                Image(systemName: "trash")
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                
+                Button("Add Folder") {
+                    showProtectedPathPicker = true
+                }
+                
+                Text("Files in these folders will never be deleted.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             
             Section("Settings") {
@@ -306,6 +347,16 @@ struct AdvancedPreferencesView: View {
                     get: { preferencesManager.preferences.showNotifications },
                     set: { preferencesManager.preferences.showNotifications = $0 }
                 ))
+            }
+            
+            Section("Menu Bar") {
+                Toggle("Show menu bar icon", isOn: Binding(
+                    get: { preferencesManager.preferences.showMenuBarIcon },
+                    set: { preferencesManager.preferences.showMenuBarIcon = $0 }
+                ))
+                Text("Quick access to MacClean from the menu bar")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             
             Section("Scheduled Cleanup") {
@@ -387,6 +438,24 @@ struct AdvancedPreferencesView: View {
                 print("Failed to import settings: \(error)")
             }
         }
+        .fileImporter(
+            isPresented: $showProtectedPathPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                for url in urls {
+                    let path = url.path
+                    if !preferencesManager.preferences.protectedPaths.contains(path) {
+                        preferencesManager.preferences.protectedPaths.append(path)
+                    }
+                }
+                preferencesManager.save()
+            case .failure(let error):
+                print("Failed to select folder: \(error)")
+            }
+        }
     }
     
     private func importSettings(from url: URL) {
@@ -436,7 +505,10 @@ struct SettingsDocument: FileDocument {
                 autoScanOnLaunch: importedData.autoScanOnLaunch,
                 totalSpaceFreed: importedData.totalSpaceFreed ?? 0,
                 sizeThresholdWarningGB: importedData.sizeThresholdWarningGB ?? 10.0,
-                moveToTrash: importedData.moveToTrash ?? true
+
+                moveToTrash: importedData.moveToTrash ?? true,
+                protectedPaths: importedData.protectedPaths ?? [],
+                showMenuBarIcon: importedData.showMenuBarIcon ?? true
             )
         }
     }
@@ -457,7 +529,9 @@ struct SettingsDocument: FileDocument {
                 autoScanOnLaunch: preferences.autoScanOnLaunch,
                 totalSpaceFreed: preferences.totalSpaceFreed,
                 sizeThresholdWarningGB: preferences.sizeThresholdWarningGB,
-                moveToTrash: preferences.moveToTrash
+                moveToTrash: preferences.moveToTrash,
+                protectedPaths: preferences.protectedPaths,
+                showMenuBarIcon: preferences.showMenuBarIcon
             )
         }
         let encodedData = try encoder.encode(data)

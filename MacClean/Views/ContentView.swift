@@ -16,6 +16,9 @@ struct ContentView: View {
     @State private var showFilePreview = false
     @State private var showSizeWarning = false
     @State private var showUndoAlert = false
+    @State private var showDiskUsage = false
+    @State private var showAnalytics = false
+    @State private var showSystemHealth = false
     @State private var lastCleanupSpaceFreed: Int64 = 0
     @State private var cleanupTask: Task<Void, Never>?
     private let notificationService = NotificationService.shared
@@ -208,10 +211,25 @@ struct ContentView: View {
     
     private var toolbarContent: some View {
         HStack(spacing: 12) {
+            Button(action: { showDiskUsage = true }) {
+                Image(systemName: "chart.pie.fill")
+            }
+            .help("View Disk Usage")
+            
             Button(action: { showHistory = true }) {
                 Image(systemName: "clock.arrow.circlepath")
             }
             .help("View Cleanup History")
+            
+            Button(action: { showAnalytics = true }) {
+                Image(systemName: "chart.bar.xaxis")
+            }
+            .help("View Cleanup Analytics")
+            
+            Button(action: { showSystemHealth = true }) {
+                Image(systemName: "heart.circle.fill")
+            }
+            .help("View System Health Dashboard")
             
             SettingsLink {
                 Image(systemName: "gearshape")
@@ -242,6 +260,16 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showHistory) {
             CleanupHistoryView(historyManager: historyManager)
+        }
+        .sheet(isPresented: $showDiskUsage) {
+            DiskUsageView()
+        }
+        .sheet(isPresented: $showAnalytics) {
+            CleanupAnalyticsView()
+        }
+        .sheet(isPresented: $showSystemHealth) {
+            SystemHealthDashboardView(cleanupEngine: cleanupEngine)
+                .environment(cleanupEngine)
         }
         .confirmationDialog("Confirm Cleanup", isPresented: $showConfirmation, titleVisibility: .visible) {
             Button("Preview Files") {
@@ -278,7 +306,7 @@ struct ContentView: View {
         .sheet(isPresented: $showFilePreview) {
             NavigationStack {
                 FilePreviewView(
-                    cleanupItems: cleanupItems,
+                    cleanupItems: $cleanupItems,
                     selectedCategories: selectedCategories
                 )
                 .navigationTitle("Cleanup Preview")
@@ -368,9 +396,12 @@ struct ContentView: View {
     private func performCleanup() {
         let startTime = Date()
         let moveToTrash = preferencesManager.preferences.moveToTrash
+        let protectedPaths = preferencesManager.preferences.protectedPaths
+        
+        let itemsToClean = cleanupItems.filter { selectedCategories.contains($0.category) }
         
         cleanupTask = Task {
-            await cleanupEngine.cleanCategories(selectedCategories, moveToTrash: moveToTrash) { progress, status in
+            await cleanupEngine.cleanCategories(itemsToClean, moveToTrash: moveToTrash, protectedPaths: protectedPaths) { progress, status in
                 Task { @MainActor in
                     cleanupEngine.currentProgress = progress
                     cleanupEngine.currentStatus = status
@@ -383,15 +414,15 @@ struct ContentView: View {
                 
                 // Update total space freed counter and history
                 if let summary = cleanupEngine.summary {
-                    // Only count space as freed if permanently deleted (not moved to Trash)
-                    // When moved to Trash, files still take up space, just in a different location
-                    let actualSpaceFreed = moveToTrash ? 0 : summary.totalSpaceFreed
+                    // Track the space freed regardless of moveToTrash setting
+                    // This gives users accurate statistics about their cleanup work
+                    let spaceFreed = summary.totalSpaceFreed
                     
-                    // Add to history first
+                    // Add to history
                     let entry = CleanupHistoryEntry(
                         categories: selectedCategories.map { $0.rawValue },
                         itemsDeleted: summary.totalItemsDeleted,
-                        spaceFreed: actualSpaceFreed,
+                        spaceFreed: spaceFreed,
                         duration: Date().timeIntervalSince(startTime),
                         success: summary.failedCategories == 0
                     )
@@ -429,7 +460,7 @@ struct ContentView: View {
                     // Send notification if enabled
                     if preferencesManager.preferences.showNotifications {
                         notificationService.sendCleanupCompleteNotification(
-                            spaceFreed: actualSpaceFreed,
+                            spaceFreed: spaceFreed,
                             itemsDeleted: summary.totalItemsDeleted,
                             movedToTrash: moveToTrash
                         )
@@ -453,7 +484,18 @@ struct ContentView: View {
                     preferences: preferencesManager.preferences
                 )
                 
-                let suggestions = try await service.getSuggestions(for: cleanupItems)
+                // Build enhanced context and learning preferences
+                let enhancedContext = await EnhancedContextBuilder.buildContext(
+                    cleanupEngine: cleanupEngine,
+                    preferencesManager: preferencesManager
+                )
+                let learningPreferences = AILearningManager.shared.getUserPreferences()
+                
+                let suggestions = try await service.getSuggestions(
+                    for: cleanupItems,
+                    enhancedContext: enhancedContext,
+                    learningPreferences: learningPreferences
+                )
                 
                 await MainActor.run {
                     aiSuggestions = suggestions
@@ -561,6 +603,7 @@ struct AISuggestionsSection: View {
 
 struct AISuggestionCard: View {
     let suggestion: AISuggestion
+    @State private var hasInteracted = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -587,6 +630,42 @@ struct AISuggestionCard: View {
                     .frame(width: 100)
                 
                 Text("\(Int(suggestion.confidence * 100))% confidence")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            
+            if !hasInteracted {
+                HStack(spacing: 8) {
+                    Button(action: {
+                        AILearningManager.shared.recordFeedback(
+                            suggestionId: suggestion.id,
+                            category: suggestion.category.rawValue,
+                            accepted: true
+                        )
+                        hasInteracted = true
+                    }) {
+                        Label("Accept", systemImage: "checkmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    
+                    Button(action: {
+                        AILearningManager.shared.recordFeedback(
+                            suggestionId: suggestion.id,
+                            category: suggestion.category.rawValue,
+                            accepted: false
+                        )
+                        hasInteracted = true
+                    }) {
+                        Label("Reject", systemImage: "xmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            } else {
+                Text("Feedback recorded")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

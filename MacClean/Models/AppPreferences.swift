@@ -15,6 +15,8 @@ class AppPreferences {
     var totalSpaceFreed: Int64 // Cumulative total space freed in bytes
     var sizeThresholdWarningGB: Double // Size threshold in GB to show warning (0 = disabled)
     var moveToTrash: Bool // Move files to Trash instead of permanent deletion
+    var protectedPaths: [String] // Paths that should never be deleted
+    var showMenuBarIcon: Bool // Show menu bar icon for quick access
     
     init(
         enabledCategories: Set<CleanupCategoryType> = Set(CleanupCategoryType.allCases),
@@ -27,7 +29,17 @@ class AppPreferences {
         autoScanOnLaunch: Bool = false,
         totalSpaceFreed: Int64 = 0,
         sizeThresholdWarningGB: Double = 10.0, // Default: warn if deleting more than 10GB
-        moveToTrash: Bool = true // Default: move to Trash for safety
+        moveToTrash: Bool = true, // Default: move to Trash for safety
+        protectedPaths: [String] = [
+            "/Applications",
+            "/System",
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path ?? "",
+            FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.path ?? "",
+            FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first?.path ?? "",
+            FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first?.path ?? "",
+            FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first?.path ?? ""
+        ].filter { !$0.isEmpty },
+        showMenuBarIcon: Bool = true
     ) {
         self.enabledCategories = enabledCategories
         self.aiServiceType = aiServiceType
@@ -40,6 +52,8 @@ class AppPreferences {
         self.totalSpaceFreed = totalSpaceFreed
         self.sizeThresholdWarningGB = sizeThresholdWarningGB
         self.moveToTrash = moveToTrash
+        self.protectedPaths = protectedPaths
+        self.showMenuBarIcon = showMenuBarIcon
     }
     
     var formattedTotalSpaceFreed: String {
@@ -61,6 +75,8 @@ nonisolated struct AppPreferencesData: Codable {
     let totalSpaceFreed: Int64?
     let sizeThresholdWarningGB: Double?
     let moveToTrash: Bool?
+    let protectedPaths: [String]?
+    let showMenuBarIcon: Bool?
     
     nonisolated init(
         enabledCategories: [String],
@@ -73,7 +89,9 @@ nonisolated struct AppPreferencesData: Codable {
         autoScanOnLaunch: Bool,
         totalSpaceFreed: Int64?,
         sizeThresholdWarningGB: Double?,
-        moveToTrash: Bool?
+        moveToTrash: Bool?,
+        protectedPaths: [String]?,
+        showMenuBarIcon: Bool?
     ) {
         self.enabledCategories = enabledCategories
         self.aiServiceType = aiServiceType
@@ -86,6 +104,8 @@ nonisolated struct AppPreferencesData: Codable {
         self.totalSpaceFreed = totalSpaceFreed
         self.sizeThresholdWarningGB = sizeThresholdWarningGB
         self.moveToTrash = moveToTrash
+        self.protectedPaths = protectedPaths
+        self.showMenuBarIcon = showMenuBarIcon
     }
     
     @MainActor
@@ -101,6 +121,8 @@ nonisolated struct AppPreferencesData: Codable {
         self.totalSpaceFreed = preferences.totalSpaceFreed
         self.sizeThresholdWarningGB = preferences.sizeThresholdWarningGB
         self.moveToTrash = preferences.moveToTrash
+        self.protectedPaths = preferences.protectedPaths
+        self.showMenuBarIcon = preferences.showMenuBarIcon
     }
     
     @MainActor
@@ -116,7 +138,9 @@ nonisolated struct AppPreferencesData: Codable {
             autoScanOnLaunch: autoScanOnLaunch,
             totalSpaceFreed: totalSpaceFreed ?? 0,
             sizeThresholdWarningGB: sizeThresholdWarningGB ?? 10.0,
-            moveToTrash: moveToTrash ?? true
+            moveToTrash: moveToTrash ?? true,
+            protectedPaths: protectedPaths ?? [],
+            showMenuBarIcon: showMenuBarIcon ?? true
         )
     }
 }

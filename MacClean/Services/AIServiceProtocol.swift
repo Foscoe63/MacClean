@@ -1,13 +1,14 @@
 import Foundation
 
 protocol AIServiceProtocol {
-    func getSuggestions(for items: [CleanupItem]) async throws -> [AISuggestion]
+    func getSuggestions(for items: [CleanupItem], enhancedContext: EnhancedAIContext?, learningPreferences: AILearningPreferences?) async throws -> [AISuggestion]
     func sendChatMessage(_ message: String, context: ChatContext?) async throws -> String
     var serviceType: AIServiceType { get }
 }
 
 struct ChatContext {
     let fileSystemInfo: FileSystemInfo?
+    let enhancedContext: EnhancedAIContext?
     let conversationHistory: [ChatMessage]
     
     struct FileSystemInfo {

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 struct LargeFile: Identifiable {
     let id: UUID

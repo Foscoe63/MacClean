@@ -64,7 +64,7 @@ struct SiriAIService: AIServiceProtocol {
         return response
     }
     
-    func getSuggestions(for items: [CleanupItem]) async throws -> [AISuggestion] {
+    func getSuggestions(for items: [CleanupItem], enhancedContext: EnhancedAIContext? = nil, learningPreferences: AILearningPreferences? = nil) async throws -> [AISuggestion] {
         // macOS 26 Tahoe Siri AI integration
         // This is a placeholder implementation as the actual API may vary
         

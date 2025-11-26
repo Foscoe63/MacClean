@@ -191,11 +191,11 @@ struct LMStudioService: AIServiceProtocol {
         return content
     }
     
-    func getSuggestions(for items: [CleanupItem]) async throws -> [AISuggestion] {
+    func getSuggestions(for items: [CleanupItem], enhancedContext: EnhancedAIContext? = nil, learningPreferences: AILearningPreferences? = nil) async throws -> [AISuggestion] {
         // Use the same URL construction as sendChatMessage
         let url = try buildChatCompletionsURL()
         
-        let prompt = buildPrompt(for: items)
+        let prompt = buildPrompt(for: items, enhancedContext: enhancedContext, learningPreferences: learningPreferences)
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -207,7 +207,7 @@ struct LMStudioService: AIServiceProtocol {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are a helpful assistant that analyzes macOS cleanup opportunities. Provide suggestions in JSON format with category, reason, estimated space, and confidence (0.0-1.0)."
+                    "content": buildSystemPrompt(enhancedContext: enhancedContext, learningPreferences: learningPreferences)
                 ],
                 [
                     "role": "user",
@@ -246,12 +246,53 @@ struct LMStudioService: AIServiceProtocol {
         return parseSuggestions(from: lmResponse, items: items)
     }
     
-    private func buildPrompt(for items: [CleanupItem]) -> String {
+    private func buildSystemPrompt(enhancedContext: EnhancedAIContext?, learningPreferences: AILearningPreferences?) -> String {
+        var prompt = "You are a helpful assistant that analyzes macOS cleanup opportunities. Provide suggestions in JSON format with category, reason, estimated space, and confidence (0.0-1.0)."
+        
+        if let context = enhancedContext {
+            prompt += "\n\nEnhanced Context:"
+            prompt += "\n- Disk Health Score: \(String(format: "%.2f", context.systemHealthMetrics.diskHealthScore))"
+            prompt += "\n- Disk Usage: \(String(format: "%.1f", context.systemHealthMetrics.diskUsagePercent))%"
+            if let daysSince = context.systemHealthMetrics.daysSinceLastCleanup {
+                prompt += "\n- Days since last cleanup: \(daysSince)"
+            }
+        }
+        
+        if let learning = learningPreferences {
+            prompt += "\n\nUser Preferences (learned from behavior):"
+            if !learning.preferredCategories.isEmpty {
+                prompt += "\n- Preferred categories: \(learning.preferredCategories.joined(separator: ", "))"
+            }
+            if !learning.avoidedCategories.isEmpty {
+                prompt += "\n- Avoided categories: \(learning.avoidedCategories.joined(separator: ", "))"
+            }
+            prompt += "\n- Average acceptance rate: \(String(format: "%.1f", learning.averageAcceptanceRate * 100))%"
+        }
+        
+        return prompt
+    }
+    
+    private func buildPrompt(for items: [CleanupItem], enhancedContext: EnhancedAIContext?, learningPreferences: AILearningPreferences?) -> String {
         var prompt = "Analyze these macOS cleanup categories and suggest which ones should be cleaned:\n\n"
         
         for item in items {
             let sizeStr = item.estimatedSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "unknown"
             prompt += "- \(item.name): \(item.description) (Size: \(sizeStr))\n"
+        }
+        
+        // Add enhanced context information
+        if let context = enhancedContext {
+            prompt += "\n\nSystem Context:\n"
+            prompt += "- Disk Health Score: \(String(format: "%.2f", context.systemHealthMetrics.diskHealthScore))\n"
+            prompt += "- Disk Usage: \(String(format: "%.1f", context.systemHealthMetrics.diskUsagePercent))%\n"
+            if let daysSince = context.systemHealthMetrics.daysSinceLastCleanup {
+                prompt += "- Days since last cleanup: \(daysSince)\n"
+            }
+        }
+        
+        // Add learning preferences
+        if let learning = learningPreferences, !learning.preferredCategories.isEmpty {
+            prompt += "\nUser Preferences: User tends to accept suggestions for: \(learning.preferredCategories.joined(separator: ", "))\n"
         }
         
         prompt += "\nProvide suggestions in this JSON format:\n"

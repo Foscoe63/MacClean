@@ -16,7 +16,8 @@ struct CleanupItem: Identifiable, Codable, Equatable {
         category: CleanupCategoryType,
         isEnabled: Bool = true,
         requiresAdmin: Bool = false,
-        estimatedSize: Int64? = nil
+        estimatedSize: Int64? = nil,
+        files: [CleanupFile]? = nil
     ) {
         self.id = id
         self.name = name
@@ -25,7 +26,10 @@ struct CleanupItem: Identifiable, Codable, Equatable {
         self.isEnabled = isEnabled
         self.requiresAdmin = requiresAdmin
         self.estimatedSize = estimatedSize
+        self.files = files
     }
+    
+    var files: [CleanupFile]?
 }
 
 enum CleanupCategoryType: String, Codable, CaseIterable {

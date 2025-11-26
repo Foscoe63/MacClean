@@ -65,5 +65,20 @@ class NotificationService {
         
         UNUserNotificationCenter.current().add(request)
     }
+    
+    func sendCleanupNeededNotification(spaceAvailable: Int64, message: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Cleanup Available"
+        content.body = message
+        content.sound = .default
+        
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        
+        UNUserNotificationCenter.current().add(request)
+    }
 }
 

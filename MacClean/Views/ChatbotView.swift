@@ -150,6 +150,7 @@ struct ChatbotView: View {
                 // Build context with file system info and conversation history
                 let context = ChatContext(
                     fileSystemInfo: fileSystemInfo,
+                    enhancedContext: nil, // Can be enhanced later if needed
                     conversationHistory: messages
                 )
                 

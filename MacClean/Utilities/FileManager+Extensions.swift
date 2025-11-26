@@ -4,7 +4,7 @@ extension FileManager {
     func sizeOfDirectory(at url: URL) -> Int64 {
         guard let enumerator = enumerator(
             at: url,
-            includingPropertiesForKeys: [.fileSizeKey],
+            includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
             options: [.skipsHiddenFiles],
             errorHandler: nil
         ) else {
@@ -13,8 +13,17 @@ extension FileManager {
         
         var totalSize: Int64 = 0
         for case let fileURL as URL in enumerator {
-            if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                totalSize += Int64(fileSize)
+            // Check if this is a directory
+            var isDirectory: ObjCBool = false
+            guard fileExists(atPath: fileURL.path, isDirectory: &isDirectory) else {
+                continue
+            }
+            
+            // Only count files, not directory entries
+            if !isDirectory.boolValue {
+                if let fileSize = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                    totalSize += Int64(fileSize)
+                }
             }
         }
         
@@ -34,7 +43,7 @@ extension FileManager {
         return enumerator.allObjects.count
     }
     
-    func safeDelete(at url: URL, moveToTrash: Bool = true) throws {
+    func safeDelete(at url: URL, moveToTrash: Bool = true, protectedPaths: [String] = []) throws {
         guard fileExists(atPath: url.path) else {
             throw CleanupError.fileNotFound
         }
@@ -97,6 +106,13 @@ extension FileManager {
             }
         }
         
+        // Check user-defined protected paths
+        for protectedPath in protectedPaths {
+            if path.hasPrefix(protectedPath) {
+                throw CleanupError.deletionFailed("Cannot delete user-protected path: \(protectedPath)")
+            }
+        }
+        
         // Additional protection: don't delete anything in /Applications
         if path.hasPrefix("/Applications") {
             throw CleanupError.deletionFailed("Cannot delete files in /Applications directory")
@@ -115,7 +131,7 @@ extension FileManager {
         }
     }
     
-    func safeDeleteContents(of url: URL, category: String? = nil, moveToTrash: Bool = true) throws -> (itemsDeleted: Int, spaceFreed: Int64) {
+    func safeDeleteContents(of url: URL, category: String? = nil, moveToTrash: Bool = true, protectedPaths: [String] = []) throws -> (itemsDeleted: Int, spaceFreed: Int64) {
         guard fileExists(atPath: url.path) else {
             throw CleanupError.fileNotFound
         }
@@ -152,20 +168,27 @@ extension FileManager {
             
             // Get size before attempting deletion
             var itemSize: Int64 = 0
-            if let fileSize = try? item.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                itemSize = Int64(fileSize)
+            var isItemDirectory: ObjCBool = false
+            if fileExists(atPath: item.path, isDirectory: &isItemDirectory) {
+                if isItemDirectory.boolValue {
+                    // For directories, calculate recursive size
+                    itemSize = sizeOfDirectory(at: item)
+                } else {
+                    // For files, get file size
+                    if let fileSize = try? item.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                        itemSize = Int64(fileSize)
+                    }
+                }
             }
             
             // Try to delete, but continue if it fails (permission denied, etc.)
             do {
-                try safeDelete(at: item, moveToTrash: moveToTrash)
+                try safeDelete(at: item, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
                 itemsDeleted += 1
                 
-                // Only count space as freed if permanently deleted (not moved to Trash)
-                // When moved to Trash, files still take up space, just in a different location
-                if !moveToTrash {
-                    spaceFreed += itemSize
-                }
+                // Count the space regardless of moveToTrash setting
+                // This gives users accurate statistics about their cleanup work
+                spaceFreed += itemSize
                 
                 // Log successful deletion
                 DeletionLogManager.shared.logDeletion(
@@ -187,6 +210,42 @@ extension FileManager {
                 // Skip items that can't be deleted (protected files)
                 // Continue with other items
                 continue
+            }
+        }
+        
+        return (itemsDeleted, spaceFreed)
+    }
+    
+    func safeDeleteFiles(_ files: [CleanupFile], category: String, moveToTrash: Bool = true, protectedPaths: [String] = []) throws -> (itemsDeleted: Int, spaceFreed: Int64) {
+        var itemsDeleted = 0
+        var spaceFreed: Int64 = 0
+        
+        for file in files {
+            if file.isExcluded { continue }
+            
+            let url = file.url
+            
+            do {
+                try safeDelete(at: url, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
+                itemsDeleted += 1
+                
+                // Count the space regardless of moveToTrash setting
+                spaceFreed += file.size
+                
+                DeletionLogManager.shared.logDeletion(
+                    filePath: file.path,
+                    fileSize: file.size,
+                    category: category,
+                    success: true
+                )
+            } catch {
+                DeletionLogManager.shared.logDeletion(
+                    filePath: file.path,
+                    fileSize: file.size,
+                    category: category,
+                    success: false,
+                    errorMessage: error.localizedDescription
+                )
             }
         }
         

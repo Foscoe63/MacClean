@@ -73,16 +73,31 @@ class CleanupEngine {
         return items
     }
     
-    func cleanCategories(_ types: Set<CleanupCategoryType>, moveToTrash: Bool = true, progressHandler: @escaping (Double, String) -> Void) async {
+    func getDetailedFiles(for categoryType: CleanupCategoryType) async -> [CleanupFile] {
+        guard let category = categories.first(where: { $0.type == categoryType }) else {
+            return []
+        }
+        
+        do {
+            return try await category.scanDetailed()
+        } catch {
+            print("Failed to get detailed files for \(categoryType): \(error)")
+            return []
+        }
+    }
+    
+    func cleanCategories(_ items: [CleanupItem], moveToTrash: Bool = true, protectedPaths: [String] = [], progressHandler: @escaping (Double, String) -> Void) async {
         isCleaning = true
         results = []
         currentProgress = 0.0
         currentStatus = ""
         
-        let categoriesToClean = categories.filter { types.contains($0.type) }
+        let categoriesToClean = items.filter { $0.isEnabled }
         let totalCategories = Double(categoriesToClean.count)
         
-        for (index, category) in categoriesToClean.enumerated() {
+        for (index, item) in categoriesToClean.enumerated() {
+            guard let category = categories.first(where: { $0.type == item.category }) else { continue }
+            
             let progress = Double(index) / totalCategories
             progressHandler(progress, "Cleaning \(category.name)...")
             currentProgress = progress
@@ -93,10 +108,11 @@ class CleanupEngine {
                 // For categories requiring admin, always use privileged cleaning method that triggers authorization dialog
                 if category.requiresAdmin {
                     // This call triggers AuthorizationHelper dialog and privileged cleanup
+                    // Note: Admin cleanup currently doesn't support individual file exclusions or protected paths
                     result = try await cleanWithAuthorization(category: category, moveToTrash: moveToTrash)
                 } else {
-                    // For non-admin categories, use regular clean method
-                    result = try await category.clean(moveToTrash: moveToTrash)
+                    // For non-admin categories, use regular clean method with files if available
+                    result = try await category.clean(moveToTrash: moveToTrash, files: item.files, protectedPaths: protectedPaths)
                 }
                 results.append(result)
             } catch let error as CleanupError {
@@ -240,7 +256,7 @@ struct UserCachesCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let cachesURL = fileManager.homeDirectoryForCurrentUser
@@ -253,7 +269,7 @@ struct UserCachesCategory: CleanupCategory {
         
         // Delete contents of caches directory safely
         // safeDeleteContents now handles permission errors gracefully and continues
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: cachesURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: cachesURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         // If we deleted something, consider it a success even if some items were skipped
         return CleanupResult(
@@ -289,7 +305,7 @@ struct SystemCachesCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         // This method is not used directly for privileged categories.
         // Cleaning is done via cleanWithAuthorization to handle authorization.
         throw CleanupError.authorizationFailed
@@ -320,7 +336,7 @@ struct UserLogsCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let logsURL = fileManager.homeDirectoryForCurrentUser
@@ -331,7 +347,7 @@ struct UserLogsCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: logsURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: logsURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         // error parameter before duration to match struct's parameter order (not needed here since no error)
         return CleanupResult(
@@ -367,7 +383,7 @@ struct SystemLogsCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         // This method is not used directly for privileged categories.
         // Cleaning is done via cleanWithAuthorization to handle authorization.
         throw CleanupError.authorizationFailed
@@ -398,7 +414,7 @@ struct SafariCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let safariCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -410,7 +426,7 @@ struct SafariCacheCategory: CleanupCategory {
         
         // Safari cache may have permission issues - handle gracefully
         do {
-            let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: safariCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+            let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: safariCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
             return CleanupResult(
                 category: type,
                 success: true,
@@ -456,7 +472,7 @@ struct ChromeCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let chromeCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -467,7 +483,7 @@ struct ChromeCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: chromeCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: chromeCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -515,7 +531,7 @@ struct FirefoxCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let firefoxCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -533,7 +549,7 @@ struct FirefoxCacheCategory: CleanupCategory {
             for profile in profiles {
                 let cacheDir = profile.appendingPathComponent("cache2")
                 if fileManager.fileExists(atPath: cacheDir.path) {
-                    let (deleted, freed) = try fileManager.safeDeleteContents(of: cacheDir, category: type.displayName, moveToTrash: moveToTrash)
+                    let (deleted, freed) = try fileManager.safeDeleteContents(of: cacheDir, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
                     itemsDeleted += deleted
                     spaceFreed += freed
                 }
@@ -576,7 +592,7 @@ struct DownloadsCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         
@@ -589,7 +605,7 @@ struct DownloadsCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: downloadsURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: downloadsURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -628,7 +644,7 @@ struct TrashCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         
@@ -643,7 +659,7 @@ struct TrashCategory: CleanupCategory {
         
         // Trash may have permission issues - handle gracefully
         do {
-            let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: trashURL, category: type.displayName, moveToTrash: moveToTrash)
+            let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: trashURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
             return CleanupResult(
                 category: type,
                 success: true,
@@ -691,7 +707,7 @@ struct XcodeDerivedDataCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let derivedDataURL = fileManager.homeDirectoryForCurrentUser
@@ -701,7 +717,7 @@ struct XcodeDerivedDataCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: derivedDataURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: derivedDataURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -737,7 +753,7 @@ struct XcodeArchivesCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let archivesURL = fileManager.homeDirectoryForCurrentUser
@@ -747,7 +763,7 @@ struct XcodeArchivesCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: archivesURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: archivesURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -783,7 +799,7 @@ struct NPMCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let npmCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -793,7 +809,7 @@ struct NPMCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: npmCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: npmCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -829,7 +845,7 @@ struct CocoaPodsCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let cocoapodsCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -839,7 +855,7 @@ struct CocoaPodsCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: cocoapodsCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: cocoapodsCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -875,7 +891,7 @@ struct HomebrewCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let homebrewCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -885,7 +901,7 @@ struct HomebrewCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: homebrewCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: homebrewCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -921,7 +937,7 @@ struct DockerCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let dockerURL = fileManager.homeDirectoryForCurrentUser
@@ -931,7 +947,7 @@ struct DockerCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: dockerURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: dockerURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -967,7 +983,7 @@ struct EdgeCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let edgeCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -977,7 +993,7 @@ struct EdgeCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: edgeCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: edgeCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -1013,7 +1029,7 @@ struct BraveCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let braveCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -1023,7 +1039,7 @@ struct BraveCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: braveCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: braveCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -1059,7 +1075,7 @@ struct SpotifyCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let spotifyCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -1069,7 +1085,7 @@ struct SpotifyCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: spotifyCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: spotifyCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -1105,7 +1121,7 @@ struct SlackCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let slackCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -1115,7 +1131,7 @@ struct SlackCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: slackCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: slackCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -1151,7 +1167,7 @@ struct ZoomCacheCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let zoomCacheURL = fileManager.homeDirectoryForCurrentUser
@@ -1161,7 +1177,7 @@ struct ZoomCacheCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: zoomCacheURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: zoomCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
@@ -1197,7 +1213,7 @@ struct iOSBackupsCategory: CleanupCategory {
         )
     }
     
-    func clean(moveToTrash: Bool) async throws -> CleanupResult {
+    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
         let startTime = Date()
         let fileManager = FileManager.default
         let backupsURL = fileManager.homeDirectoryForCurrentUser
@@ -1207,7 +1223,7 @@ struct iOSBackupsCategory: CleanupCategory {
             return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
         }
         
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: backupsURL, category: type.displayName, moveToTrash: moveToTrash)
+        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: backupsURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,
