@@ -143,6 +143,8 @@ struct ContentView: View {
                         }
                         .frame(maxWidth: .infinity)
                     }
+                    // Accessibility improvements
+                    .accessibilityLabel("Scan for cleanup items")
                     .buttonStyle(.borderedProminent)
                     .disabled(isScanning || cleanupEngine.isCleaning)
                     .keyboardShortcut("s", modifiers: .command)
@@ -154,6 +156,8 @@ struct ContentView: View {
                         }
                         .frame(maxWidth: .infinity)
                     }
+                    // Accessibility improvements
+                    .accessibilityLabel("Start cleaning selected categories")
                     .buttonStyle(.bordered)
                     .disabled(selectedCategories.isEmpty || cleanupEngine.isCleaning)
                     .keyboardShortcut("c", modifiers: .command)
@@ -543,30 +547,30 @@ struct ContentView: View {
 struct CleanupItemRow: View {
     let item: CleanupItem
     let isSelected: Bool
-    
+
     var body: some View {
         HStack {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                 .foregroundColor(isSelected ? .blue : .secondary)
-            
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.name)
                     .font(.subheadline)
                     .fontWeight(.medium)
-                
+
                 Text(item.description)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
+
                 if let size = item.estimatedSize {
                     Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
                         .font(.caption2)
                         .foregroundColor(.blue)
                 }
             }
-            
+
             Spacer()
-            
+
             if item.requiresAdmin {
                 Image(systemName: "lock.fill")
                     .font(.caption)
@@ -574,6 +578,9 @@ struct CleanupItemRow: View {
             }
         }
         .padding(.vertical, 4)
+        // Combine elements for a single accessibility element
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.name + ", " + (item.estimatedSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "size unknown"))
     }
 }
 
@@ -581,6 +588,12 @@ struct AISuggestionsSection: View {
     let suggestions: [AISuggestion]
     
     var body: some View {
+        contentBody
+    }
+
+    // Extracted large view hierarchy to aid type‑checking performance
+    @ViewBuilder
+    private var contentBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "sparkles")
@@ -604,77 +617,105 @@ struct AISuggestionsSection: View {
 struct AISuggestionCard: View {
     let suggestion: AISuggestion
     @State private var hasInteracted = false
-    
+
+    // Build a concise accessibility description once to avoid complex inline concatenation
+    private var accessibilityDescription: String {
+        suggestion.category.displayName + ", " +
+        (suggestion.estimatedSpace.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "no size") +
+        ", Reason: " + suggestion.reason
+    }
+
     var body: some View {
+        cardContent
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(accessibilityDescription)
+            .padding()
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(NSColor.textBackgroundColor))
+            )
+    }
+
+    // Extracted sub‑view to reduce type‑checking complexity
+    @ViewBuilder
+    private var cardContent: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(suggestion.category.displayName)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                
-                Spacer()
-                
-                if let space = suggestion.estimatedSpace {
-                    Text(ByteCountFormatter.string(fromByteCount: space, countStyle: .file))
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                }
-            }
-            
+            headerView
             Text(suggestion.reason)
                 .font(.caption)
                 .foregroundColor(.secondary)
-            
-            HStack {
-                ProgressView(value: suggestion.confidence)
-                    .frame(width: 100)
-                
-                Text("\(Int(suggestion.confidence * 100))% confidence")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-            
-            if !hasInteracted {
-                HStack(spacing: 8) {
-                    Button(action: {
-                        AILearningManager.shared.recordFeedback(
-                            suggestionId: suggestion.id,
-                            category: suggestion.category.rawValue,
-                            accepted: true
-                        )
-                        hasInteracted = true
-                    }) {
-                        Label("Accept", systemImage: "checkmark.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    
-                    Button(action: {
-                        AILearningManager.shared.recordFeedback(
-                            suggestionId: suggestion.id,
-                            category: suggestion.category.rawValue,
-                            accepted: false
-                        )
-                        hasInteracted = true
-                    }) {
-                        Label("Reject", systemImage: "xmark.circle")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            } else {
-                Text("Feedback recorded")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+            confidenceView
+            interactionButtonsOrConfirmation
+        }
+    }
+
+    @ViewBuilder
+    private var headerView: some View {
+        HStack {
+            Text(suggestion.category.displayName)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Spacer()
+            if let space = suggestion.estimatedSpace {
+                Text(ByteCountFormatter.string(fromByteCount: space, countStyle: .file))
+                    .font(.caption)
+                    .foregroundColor(.blue)
             }
         }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.textBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var confidenceView: some View {
+        HStack {
+            ProgressView(value: suggestion.confidence)
+                .frame(width: 100)
+            Text("\(Int(suggestion.confidence * 100))% confidence")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var interactionButtonsOrConfirmation: some View {
+        if !hasInteracted {
+            HStack(spacing: 8) {
+                Button(action: recordAccept) {
+                    Label("Accept", systemImage: "checkmark.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button(action: recordReject) {
+                    Label("Reject", systemImage: "xmark.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        } else {
+            Text("Feedback recorded")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private func recordAccept() {
+        AILearningManager.shared.recordFeedback(
+            suggestionId: suggestion.id,
+            category: suggestion.category.rawValue,
+            accepted: true
         )
+        hasInteracted = true
+    }
+
+    private func recordReject() {
+        AILearningManager.shared.recordFeedback(
+            suggestionId: suggestion.id,
+            category: suggestion.category.rawValue,
+            accepted: false
+        )
+        hasInteracted = true
     }
 }
 

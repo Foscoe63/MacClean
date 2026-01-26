@@ -49,27 +49,50 @@ class CleanupEngine {
         ]
     }
     
+    /// Scans the requested cleanup categories concurrently for better performance.
+    /// Uses a task group to launch scans in parallel while preserving order‑independent results.
     func scanCategories(_ types: Set<CleanupCategoryType>) async -> [CleanupItem] {
         var items: [CleanupItem] = []
-        
-        for category in categories where types.contains(category.type) {
-            do {
-                let scanResult = try await category.scan()
-                let item = CleanupItem(
-                    name: category.name,
-                    description: category.description,
-                    category: category.type,
-                    isEnabled: true,
-                    requiresAdmin: category.requiresAdmin,
-                    estimatedSize: scanResult.estimatedSize
-                )
-                items.append(item)
-            } catch {
-                // Continue with other categories even if one fails
-                print("Failed to scan \(category.name): \(error)")
+
+        await withTaskGroup(of: CleanupItem?.self) { group in
+            for category in categories where types.contains(category.type) {
+                // Capture static info on the main actor before entering background task
+                let name = await MainActor.run { category.name }
+                let description = await MainActor.run { category.description }
+                let type = await MainActor.run { category.type }
+                let requiresAdmin = await MainActor.run { category.requiresAdmin }
+
+                group.addTask {
+                    do {
+                        let scanResult = try await category.scan()
+                        // Construct CleanupItem on the main actor to satisfy isolation rules
+                        return await MainActor.run {
+                            CleanupItem(
+                                name: name,
+                                description: description,
+                                category: type,
+                                isEnabled: true,
+                                requiresAdmin: requiresAdmin,
+                                estimatedSize: scanResult.estimatedSize
+                            )
+                        }
+                    } catch {
+                        // Log and return nil so the group can continue
+                        await MainActor.run {
+                            print("Failed to scan \(name): \(error)")
+                        }
+                        return nil
+                    }
+                }
+            }
+
+            for await result in group {
+                if let item = result {
+                    items.append(item)
+                }
             }
         }
-        
+
         return items
     }
     
@@ -99,9 +122,11 @@ class CleanupEngine {
             guard let category = categories.first(where: { $0.type == item.category }) else { continue }
             
             let progress = Double(index) / totalCategories
-            progressHandler(progress, "Cleaning \(category.name)...")
+            // Capture UI‑related strings on the main actor to avoid Sendable violations
+            let categoryName = await MainActor.run { category.name }
+            progressHandler(progress, "Cleaning \(categoryName)...")
             currentProgress = progress
-            currentStatus = "Cleaning \(category.name)..."
+            currentStatus = "Cleaning \(categoryName)..."
             
             do {
                 var result: CleanupResult

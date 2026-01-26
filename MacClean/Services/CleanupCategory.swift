@@ -1,6 +1,6 @@
 import Foundation
 
-protocol CleanupCategory {
+protocol CleanupCategory: Sendable {
     var type: CleanupCategoryType { get }
     var name: String { get }
     var description: String { get }
