@@ -60,11 +60,7 @@ class MenuBarManager: ObservableObject {
         guard let button = statusItem?.button else { return }
         
         // Get disk space
-        let fileManager = FileManager.default
-        if let homeURL = fileManager.urls(for: .userDirectory, in: .userDomainMask).first,
-           let attributes = try? fileManager.attributesOfFileSystem(forPath: homeURL.path),
-           let total = attributes[.systemSize] as? Int64,
-           let free = attributes[.systemFreeSize] as? Int64 {
+        if let diskSpace = DiskSpace.current(), case let (total, free) = (diskSpace.total, diskSpace.available) {
             diskSpaceTotal = total
             diskSpaceAvailable = free
             

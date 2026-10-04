@@ -50,7 +50,7 @@ struct CleanupSummary {
     }
 }
 
-enum CleanupError: LocalizedError {
+nonisolated enum CleanupError: LocalizedError {
     case accessDenied
     case fileNotFound
     case deletionFailed(String)

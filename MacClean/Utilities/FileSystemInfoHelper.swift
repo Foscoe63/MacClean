@@ -4,22 +4,16 @@ class FileSystemInfoHelper {
     static func gatherFileSystemInfo() async -> ChatContext.FileSystemInfo? {
         let fileManager = FileManager.default
         
-        // Get disk space information
-        guard let homeURL = fileManager.urls(for: .userDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        
-        let homePath = homeURL.path
+        // .userDirectory is /Users, so use the current user's home folder instead
+        let homePath = fileManager.homeDirectoryForCurrentUser.path
         
         // Get total and available disk space
         var totalSpace: Int64 = 0
         var availableSpace: Int64 = 0
         
-        if let attributes = try? fileManager.attributesOfFileSystem(forPath: homePath),
-           let total = attributes[.systemSize] as? Int64,
-           let free = attributes[.systemFreeSize] as? Int64 {
-            totalSpace = total
-            availableSpace = free
+        if let diskSpace = DiskSpace.current() {
+            totalSpace = diskSpace.total
+            availableSpace = diskSpace.available
         }
         
         // Get home directory contents

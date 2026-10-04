@@ -44,6 +44,9 @@ struct CleanupHistoryEntry: Identifiable, Codable {
 
 @Observable
 class CleanupHistoryManager {
+    /// One shared store so every screen sees the same history without reloading UserDefaults.
+    static let shared = CleanupHistoryManager()
+    
     private let userDefaults = UserDefaults.standard
     private let historyKey = "com.macclean.cleanupHistory"
     private let maxEntries = 100

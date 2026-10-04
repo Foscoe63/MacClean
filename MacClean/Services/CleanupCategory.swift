@@ -34,22 +34,27 @@ extension CleanupCategory {
     }
     
     func clean(moveToTrash: Bool, files: [CleanupFile]?, protectedPaths: [String]) async throws -> CleanupResult {
-        if let files = files {
-            let startTime = Date()
-            let fileManager = FileManager.default
-            let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteFiles(files, category: name, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
-            
-            return CleanupResult(
-                category: type,
-                success: true,
-                itemsDeleted: itemsDeleted,
-                spaceFreed: spaceFreed,
-                duration: Date().timeIntervalSince(startTime)
-            )
+        // Without a reviewed file list, clean the whole category
+        guard let files else {
+            return try await clean(moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         }
-        // Default implementation ignores files and calls standard clean
-        // This ensures backward compatibility until individual categories are updated
-        return try await clean(moveToTrash: moveToTrash, protectedPaths: protectedPaths)
+        
+        let startTime = Date()
+        let outcome = await BackgroundFileWork.deleteFiles(
+            files,
+            category: name,
+            moveToTrash: moveToTrash,
+            protectedPaths: protectedPaths
+        )
+        DeletionLogManager.shared.logDeletions(outcome.logEntries)
+        
+        return CleanupResult(
+            category: type,
+            success: true,
+            itemsDeleted: outcome.itemsDeleted,
+            spaceFreed: outcome.spaceFreed,
+            duration: Date().timeIntervalSince(startTime)
+        )
     }
 }
 

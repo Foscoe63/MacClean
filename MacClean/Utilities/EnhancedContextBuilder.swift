@@ -12,10 +12,11 @@ class EnhancedContextBuilder {
         let recentFiles: [String] = []
         let fileModificationDates: [String: Date] = [:]
         
-        if let homeURL = fileManager.urls(for: .userDirectory, in: .userDomainMask).first,
-           let attributes = try? fileManager.attributesOfFileSystem(forPath: homeURL.path) {
-            totalDiskSpace = (attributes[.systemSize] as? Int64) ?? 0
-            availableDiskSpace = (attributes[.systemFreeSize] as? Int64) ?? 0
+        // .userDirectory is /Users, not the current user's home folder
+        let homeURL = fileManager.homeDirectoryForCurrentUser
+        if let diskSpace = DiskSpace.current() {
+            totalDiskSpace = diskSpace.total
+            availableDiskSpace = diskSpace.available
             
             // Get home directory contents
             if let contents = try? fileManager.contentsOfDirectory(atPath: homeURL.path) {
@@ -37,7 +38,7 @@ class EnhancedContextBuilder {
         )
         
         // Get user preferences history
-        let historyManager = CleanupHistoryManager()
+        let historyManager = CleanupHistoryManager.shared
         let entries = historyManager.entries
         
         var categoryFrequency: [String: Int] = [:]

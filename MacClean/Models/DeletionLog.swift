@@ -1,6 +1,6 @@
 import Foundation
 
-struct DeletionLogEntry: Codable, Identifiable {
+nonisolated struct DeletionLogEntry: Codable, Identifiable, Sendable {
     let id: UUID
     let timestamp: Date
     let filePath: String

@@ -22,7 +22,7 @@ struct ContentView: View {
     @State private var lastCleanupSpaceFreed: Int64 = 0
     @State private var cleanupTask: Task<Void, Never>?
     private let notificationService = NotificationService.shared
-    private let historyManager = CleanupHistoryManager()
+    private let historyManager = CleanupHistoryManager.shared
     private let undoManager = CleanupUndoManager.shared
     @State private var undoResultMessage = ""
     @State private var showUndoResult = false
