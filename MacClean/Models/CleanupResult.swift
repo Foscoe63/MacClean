@@ -8,6 +8,8 @@ struct CleanupResult: Identifiable {
     let spaceFreed: Int64 // in bytes
     let error: CleanupError?
     let duration: TimeInterval
+    /// True when the items went to the Trash, so `spaceFreed` is only reclaimed once the Trash is emptied.
+    var movedToTrash: Bool = false
     
     init(
         id: UUID = UUID(),
@@ -30,13 +32,21 @@ struct CleanupResult: Identifiable {
 
 struct CleanupSummary {
     let totalItemsDeleted: Int
+    /// Space actually reclaimed by permanent deletion.
     let totalSpaceFreed: Int64
+    /// Space moved to the Trash; reclaimed only once the Trash is emptied.
+    let totalSpaceMovedToTrash: Int64
     let successfulCategories: Int
     let failedCategories: Int
+    let wasCancelled: Bool
     let results: [CleanupResult]
     
     var formattedSpaceFreed: String {
         ByteCountFormatter.string(fromByteCount: totalSpaceFreed, countStyle: .file)
+    }
+    
+    var formattedSpaceMovedToTrash: String {
+        ByteCountFormatter.string(fromByteCount: totalSpaceMovedToTrash, countStyle: .file)
     }
 }
 
@@ -57,7 +67,7 @@ enum CleanupError: LocalizedError {
         case .deletionFailed(let reason):
             return "Deletion failed: \(reason)"
         case .authorizationFailed:
-            return "System caches and logs require administrator privileges. Please run the app with admin rights or use Terminal: sudo rm -rf /Library/Caches/*"
+            return "Administrator authorization was cancelled or denied, so system caches and logs were not cleaned."
         case .invalidPath:
             return "Invalid file path."
         case .unknown(let error):

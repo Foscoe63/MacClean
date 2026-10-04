@@ -30,15 +30,7 @@ extension CleanupCategory {
     
     func scanDetailed() async throws -> [CleanupFile] {
         let scanResult = try await scan()
-        
-        // Run file enumeration in a task to avoid blocking and fix async iterator issue
-        return await Task.detached(priority: .userInitiated) {
-            var files: [CleanupFile] = []
-            for url in scanResult.paths {
-                files.append(contentsOf: FileScanner.scanFilesSync(at: url))
-            }
-            return files
-        }.value
+        return await CleanupCategoryDefaults.scanFiles(in: scanResult.paths)
     }
     
     func clean(moveToTrash: Bool, files: [CleanupFile]?, protectedPaths: [String]) async throws -> CleanupResult {
@@ -61,5 +53,11 @@ extension CleanupCategory {
     }
 }
 
-
-
+enum CleanupCategoryDefaults {
+    /// Lists the regular files under the given folders off the main thread.
+    static func scanFiles(in urls: [URL]) async -> [CleanupFile] {
+        await Task.detached(priority: .userInitiated) {
+            urls.flatMap { FileScanner.scanFilesSync(at: $0) }
+        }.value
+    }
+}

@@ -43,19 +43,51 @@ extension FileManager {
         return enumerator.allObjects.count
     }
     
-    func safeDelete(at url: URL, moveToTrash: Bool = true, protectedPaths: [String] = []) throws {
-        guard fileExists(atPath: url.path) else {
-            throw CleanupError.fileNotFound
+    /// Standardizes a path and resolves symlinks so prefix checks cannot be bypassed with `..` or links.
+    nonisolated static func normalizedPaths(for path: String) -> [String] {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let resolved = URL(fileURLWithPath: standardized).resolvingSymlinksInPath().path
+        return resolved.isEmpty || resolved == standardized ? [standardized] : [standardized, resolved]
+    }
+
+    /// Returns true when `path` is `root` itself or lives inside it, compared by whole path components.
+    /// `/Users/me/Desktop` is inside `/Users/me/Desktop` but `/Users/me/Desktop Backup` is not.
+    nonisolated static func isPath(_ path: String, inside root: String) -> Bool {
+        guard !root.isEmpty else { return false }
+        for candidate in normalizedPaths(for: path) {
+            for base in normalizedPaths(for: root) {
+                if base == "/" || candidate == base || candidate.hasPrefix(base + "/") {
+                    return true
+                }
+            }
         }
-        
-        var isDirectory: ObjCBool = false
-        guard fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+        return false
+    }
+
+    /// Returns true when both paths point at the same location after normalization.
+    nonisolated static func isSamePath(_ lhs: String, _ rhs: String) -> Bool {
+        !Set(normalizedPaths(for: lhs)).isDisjoint(with: normalizedPaths(for: rhs))
+    }
+
+    /// Locations inside otherwise protected folders that specific cleanup categories are allowed to clean.
+    private func isAllowedCleanupLocation(_ path: String, homeDirectory: String) -> Bool {
+        let allowedRoots = [
+            "\(homeDirectory)/Library/Application Support/MobileSync/Backup"
+        ]
+        // Only the contents are allowed, never the root folder itself
+        return allowedRoots.contains { Self.isPath(path, inside: $0) && !Self.isSamePath(path, $0) }
+    }
+
+    /// Deletes or trashes a single item after checking it against system, user and custom protected paths.
+    /// - Returns: The item's new location in the Trash, or `nil` when it was deleted permanently.
+    @discardableResult
+    func safeDelete(at url: URL, moveToTrash: Bool = true, protectedPaths: [String] = []) throws -> URL? {
+        // attributesOfItem does not follow symlinks, so broken links can still be removed
+        guard (try? attributesOfItem(atPath: url.path)) != nil else {
             throw CleanupError.fileNotFound
         }
         
         let path = url.path
-        
-        // Get current user's home directory
         let homeDirectory = homeDirectoryForCurrentUser.path
         
         // Safety check: don't delete system-critical paths
@@ -92,53 +124,41 @@ extension FileManager {
             "\(homeDirectory)/Library/WebKit"
         ]
         
-        // Check system-critical paths (allow /Library/Caches and /var/log for cleanup)
-        for criticalPath in criticalSystemPaths {
-            if path.hasPrefix(criticalPath) && !path.hasPrefix("/Library/Caches") && !path.hasPrefix("/var/log") {
-                throw CleanupError.deletionFailed("Cannot delete system-critical path: \(criticalPath)")
-            }
+        // Never delete the home folder itself
+        guard !Self.isSamePath(path, homeDirectory) else {
+            throw CleanupError.deletionFailed("Cannot delete the home folder")
         }
         
-        // Check protected user directories (allow Downloads and Trash with warning)
-        for protectedPath in protectedUserPaths {
-            if path.hasPrefix(protectedPath) {
+        for criticalPath in criticalSystemPaths where Self.isPath(path, inside: criticalPath) {
+            throw CleanupError.deletionFailed("Cannot delete system-critical path: \(criticalPath)")
+        }
+        
+        if !isAllowedCleanupLocation(path, homeDirectory: homeDirectory) {
+            for protectedPath in protectedUserPaths where Self.isPath(path, inside: protectedPath) {
                 throw CleanupError.deletionFailed("Cannot delete protected user directory: \(protectedPath)")
             }
         }
         
-        // Check user-defined protected paths
-        for protectedPath in protectedPaths {
-            if path.hasPrefix(protectedPath) {
-                throw CleanupError.deletionFailed("Cannot delete user-protected path: \(protectedPath)")
-            }
-        }
-        
-        // Additional protection: don't delete anything in /Applications
-        if path.hasPrefix("/Applications") {
-            throw CleanupError.deletionFailed("Cannot delete files in /Applications directory")
+        for protectedPath in protectedPaths where Self.isPath(path, inside: protectedPath) {
+            throw CleanupError.deletionFailed("Cannot delete user-protected path: \(protectedPath)")
         }
         
         if moveToTrash {
-            // Move to Trash using NSFileManager
-            try trashItem(at: url, resultingItemURL: nil)
-        } else {
-            // Permanent deletion
-            if isDirectory.boolValue {
-                try removeItem(at: url)
-            } else {
-                try removeItem(at: url)
-            }
+            var resultingURL: NSURL?
+            try trashItem(at: url, resultingItemURL: &resultingURL)
+            return resultingURL.map { $0 as URL }
         }
+        
+        try removeItem(at: url)
+        return nil
     }
     
     func safeDeleteContents(of url: URL, category: String? = nil, moveToTrash: Bool = true, protectedPaths: [String] = []) throws -> (itemsDeleted: Int, spaceFreed: Int64) {
-        guard fileExists(atPath: url.path) else {
+        var isDirectory: ObjCBool = false
+        guard fileExists(atPath: url.path, isDirectory: &isDirectory) else {
             throw CleanupError.fileNotFound
         }
-        
-        var isDirectory: ObjCBool = false
-        guard fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
+        guard isDirectory.boolValue else {
             throw CleanupError.invalidPath
         }
         
@@ -155,14 +175,16 @@ extension FileManager {
         
         var itemsDeleted = 0
         var spaceFreed: Int64 = 0
+        var logEntries: [DeletionLogEntry] = []
         
         // Use provided category or fall back to directory name
         let categoryName = category ?? url.lastPathComponent
         
         for item in contents {
-            // Skip protected Apple system folders
-            let itemName = item.lastPathComponent
-            if protectedFolders.contains(itemName) {
+            // Stop between items when the user cancels; whatever is already removed stays logged
+            if Task.isCancelled { break }
+            
+            if protectedFolders.contains(item.lastPathComponent) {
                 continue
             }
             
@@ -171,85 +193,68 @@ extension FileManager {
             var isItemDirectory: ObjCBool = false
             if fileExists(atPath: item.path, isDirectory: &isItemDirectory) {
                 if isItemDirectory.boolValue {
-                    // For directories, calculate recursive size
                     itemSize = sizeOfDirectory(at: item)
-                } else {
-                    // For files, get file size
-                    if let fileSize = try? item.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                        itemSize = Int64(fileSize)
-                    }
+                } else if let fileSize = try? item.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                    itemSize = Int64(fileSize)
                 }
             }
             
-            // Try to delete, but continue if it fails (permission denied, etc.)
+            // Try to delete, but continue if it fails (permission denied, protected, etc.)
             do {
-                try safeDelete(at: item, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
+                let trashURL = try safeDelete(at: item, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
                 itemsDeleted += 1
-                
-                // Count the space regardless of moveToTrash setting
-                // This gives users accurate statistics about their cleanup work
                 spaceFreed += itemSize
-                
-                // Log successful deletion
-                DeletionLogManager.shared.logDeletion(
+                logEntries.append(DeletionLogEntry(
                     filePath: item.path,
                     fileSize: itemSize,
                     category: categoryName,
-                    success: true
-                )
+                    trashPath: trashURL?.path
+                ))
             } catch {
-                // Log failed deletion
-                DeletionLogManager.shared.logDeletion(
+                logEntries.append(DeletionLogEntry(
                     filePath: item.path,
                     fileSize: itemSize,
                     category: categoryName,
                     success: false,
                     errorMessage: error.localizedDescription
-                )
-                
-                // Skip items that can't be deleted (protected files)
-                // Continue with other items
-                continue
+                ))
             }
         }
         
+        DeletionLogManager.shared.logDeletions(logEntries)
         return (itemsDeleted, spaceFreed)
     }
     
     func safeDeleteFiles(_ files: [CleanupFile], category: String, moveToTrash: Bool = true, protectedPaths: [String] = []) throws -> (itemsDeleted: Int, spaceFreed: Int64) {
         var itemsDeleted = 0
         var spaceFreed: Int64 = 0
+        var logEntries: [DeletionLogEntry] = []
         
-        for file in files {
-            if file.isExcluded { continue }
-            
-            let url = file.url
+        for file in files where !file.isExcluded {
+            if Task.isCancelled { break }
             
             do {
-                try safeDelete(at: url, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
+                let trashURL = try safeDelete(at: file.url, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
                 itemsDeleted += 1
-                
-                // Count the space regardless of moveToTrash setting
                 spaceFreed += file.size
-                
-                DeletionLogManager.shared.logDeletion(
+                logEntries.append(DeletionLogEntry(
                     filePath: file.path,
                     fileSize: file.size,
                     category: category,
-                    success: true
-                )
+                    trashPath: trashURL?.path
+                ))
             } catch {
-                DeletionLogManager.shared.logDeletion(
+                logEntries.append(DeletionLogEntry(
                     filePath: file.path,
                     fileSize: file.size,
                     category: category,
                     success: false,
                     errorMessage: error.localizedDescription
-                )
+                ))
             }
         }
         
+        DeletionLogManager.shared.logDeletions(logEntries)
         return (itemsDeleted, spaceFreed)
     }
 }
-

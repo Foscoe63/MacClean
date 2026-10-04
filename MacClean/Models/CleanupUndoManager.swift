@@ -14,8 +14,10 @@ struct UndoEntry: Codable, Identifiable {
     }
 }
 
-class UndoManager {
-    static let shared = UndoManager()
+/// Tracks cleanups that moved items to the Trash so they can be put back.
+/// Named to avoid clashing with Foundation's `UndoManager`.
+class CleanupUndoManager {
+    static let shared = CleanupUndoManager()
     
     private let undoFileName = "undo_history.json"
     private var undoFileURL: URL {
@@ -68,41 +70,49 @@ class UndoManager {
         saveUndoEntries()
     }
     
-    func undoLastCleanup() -> Bool {
+    /// Moves the latest cleanup's items from the Trash back to where they were.
+    /// - Returns: How many items were restored and how many could not be.
+    func undoLastCleanup() -> (restored: Int, failed: Int) {
         guard let entry = undoEntries.first else {
-            return false
+            return (0, 0)
         }
         
         let fileManager = FileManager.default
         var restoredCount = 0
+        var failedCount = 0
         
         for fileInfo in entry.filesDeleted {
-            // Try to restore from Trash if trash path is available
-            if let trashPath = fileInfo.trashPath,
-               fileManager.fileExists(atPath: trashPath) {
-                do {
-                    let trashURL = URL(fileURLWithPath: trashPath)
-                    let originalURL = URL(fileURLWithPath: fileInfo.originalPath)
-                    
-                    // Create parent directory if it doesn't exist
-                    try? fileManager.createDirectory(
-                        at: originalURL.deletingLastPathComponent(),
-                        withIntermediateDirectories: true
-                    )
-                    
-                    // Move back from Trash
-                    try fileManager.moveItem(at: trashURL, to: originalURL)
-                    restoredCount += 1
-                } catch {
-                    print("Failed to restore \(fileInfo.originalPath): \(error)")
-                }
+            guard let trashPath = fileInfo.trashPath,
+                  fileManager.fileExists(atPath: trashPath) else {
+                // Already emptied from the Trash or never trashed
+                failedCount += 1
+                continue
+            }
+            
+            let trashURL = URL(fileURLWithPath: trashPath)
+            let originalURL = URL(fileURLWithPath: fileInfo.originalPath)
+            
+            // Never overwrite something that has been recreated at the original location
+            guard !fileManager.fileExists(atPath: originalURL.path) else {
+                failedCount += 1
+                continue
+            }
+            
+            do {
+                try fileManager.createDirectory(
+                    at: originalURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try fileManager.moveItem(at: trashURL, to: originalURL)
+                restoredCount += 1
+            } catch {
+                print("Failed to restore \(fileInfo.originalPath): \(error)")
+                failedCount += 1
             }
         }
         
-        // Remove entry after attempting restore
         removeUndoEntry(entry)
-        
-        return restoredCount > 0
+        return (restoredCount, failedCount)
     }
     
     private func loadUndoEntries() {

@@ -88,7 +88,7 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
         case .userCaches: return "Application caches in your user library"
         case .systemCaches: return "System-wide application caches"
         case .userLogs: return "Application logs in your user library"
-        case .systemLogs: return "System-wide logs"
+        case .systemLogs: return "Rotated and archived system logs"
         case .safariCache: return "Safari browser cache and temporary files"
         case .chromeCache: return "Google Chrome browser cache"
         case .firefoxCache: return "Mozilla Firefox browser cache"
@@ -104,8 +104,49 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
         case .spotifyCache: return "Spotify application cache"
         case .slackCache: return "Slack application cache"
         case .zoomCache: return "Zoom application cache"
-        case .iosBackups: return "Old iOS device backups"
+        case .iosBackups: return "All iPhone and iPad backups stored on this Mac"
         }
+    }
+
+    /// How much care a category needs before it is cleaned.
+    var riskLevel: CleanupRiskLevel {
+        switch self {
+        case .userCaches, .userLogs, .safariCache, .chromeCache, .firefoxCache,
+             .xcodeDerivedData, .npmCache, .cocoapodsCache, .homebrewCache,
+             .edgeCache, .braveCache, .spotifyCache, .slackCache, .zoomCache:
+            return .safe
+        case .systemCaches, .systemLogs, .trash, .xcodeArchives:
+            return .review
+        case .downloads, .iosBackups:
+            return .personalData
+        }
+    }
+
+    /// Categories cleaned through an administrator-authorized shell command.
+    var requiresAdminCleanup: Bool {
+        self == .systemCaches || self == .systemLogs
+    }
+
+    /// Categories selected for cleaning when the user has not chosen otherwise.
+    static var safeDefaults: Set<CleanupCategoryType> {
+        Set(allCases.filter { $0.riskLevel == .safe })
     }
 }
 
+/// Risk classification used to decide what may be pre-selected and what needs an explicit opt-in.
+enum CleanupRiskLevel: Sendable {
+    /// Regenerable data such as caches and logs. Safe to pre-select.
+    case safe
+    /// Data that is usually safe to remove but cannot be regenerated (Trash, archives) or needs admin rights.
+    case review
+    /// The user's own files. Never pre-selected; always called out before cleaning.
+    case personalData
+
+    var warningText: String? {
+        switch self {
+        case .safe: return nil
+        case .review: return "Cannot be regenerated once removed"
+        case .personalData: return "Contains your personal files"
+        }
+    }
+}

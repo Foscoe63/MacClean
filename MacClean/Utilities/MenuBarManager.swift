@@ -109,7 +109,7 @@ class MenuBarManager: ObservableObject {
     private func checkCleanupNeeded() {
         Task {
             // Quick background scan
-            let quickCategories: Set<CleanupCategoryType> = [.userCaches, .downloads, .trash]
+            let quickCategories = CleanupCategoryType.safeDefaults
             let results = await cleanupEngine.scanCategories(quickCategories)
             let totalSize = results.compactMap { $0.estimatedSize }.reduce(0, +)
             

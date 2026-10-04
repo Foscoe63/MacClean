@@ -9,9 +9,6 @@ class CleanupEngine {
     var results: [CleanupResult] = []
     var summary: CleanupSummary?
     
-    private let fileManager = FileManager.default
-    let authorizationHelper = AuthorizationHelper()
-    
     private var categories: [any CleanupCategory] = []
     
     init() {
@@ -117,128 +114,139 @@ class CleanupEngine {
         let totalCategories = Double(categoriesToClean.count)
         
         for (index, item) in categoriesToClean.enumerated() {
+            // Stop before starting the next category once the user cancels
+            if Task.isCancelled { break }
+            
             guard let category = categories.first(where: { $0.type == item.category }) else { continue }
             
             let progress = Double(index) / totalCategories
-            // Capture UI‑related strings on the main actor to avoid Sendable violations
-            let categoryName = await MainActor.run { category.name }
+            let categoryName = category.name
             progressHandler(progress, "Cleaning \(categoryName)...")
             currentProgress = progress
             currentStatus = "Cleaning \(categoryName)..."
             
             do {
                 var result: CleanupResult
-                // For categories requiring admin, always use privileged cleaning method that triggers authorization dialog
                 if category.requiresAdmin {
-                    // This call triggers AuthorizationHelper dialog and privileged cleanup
-                    // Note: Admin cleanup currently doesn't support individual file exclusions or protected paths
-                    result = try await cleanWithAuthorization(category: category, moveToTrash: moveToTrash)
+                    // Runs a scoped shell command behind the standard macOS administrator prompt.
+                    // These items are always deleted permanently; per-file exclusions do not apply.
+                    result = try await cleanWithAuthorization(category: category)
+                } else if category.type == .trash {
+                    // Moving Trash items to the Trash does nothing, so emptying it is always permanent
+                    result = try await category.clean(moveToTrash: false, files: item.files, protectedPaths: protectedPaths)
                 } else {
-                    // For non-admin categories, use regular clean method with files if available
                     result = try await category.clean(moveToTrash: moveToTrash, files: item.files, protectedPaths: protectedPaths)
+                    result.movedToTrash = moveToTrash
                 }
                 results.append(result)
             } catch let error as CleanupError {
-                let errorResult = CleanupResult(
-                    category: category.type,
-                    success: false,
-                    error: error,
-                    duration: 0
-                )
-                results.append(errorResult)
+                results.append(CleanupResult(category: category.type, success: false, error: error))
             } catch {
-                let errorResult = CleanupResult(
-                    category: category.type,
-                    success: false,
-                    error: .unknown(error),
-                    duration: 0
-                )
-                results.append(errorResult)
+                results.append(CleanupResult(category: category.type, success: false, error: .unknown(error)))
             }
         }
         
-        progressHandler(1.0, "Complete")
+        let wasCancelled = Task.isCancelled
+        let finalStatus = wasCancelled ? "Cancelled" : "Complete"
+        progressHandler(1.0, finalStatus)
         currentProgress = 1.0
-        currentStatus = "Complete"
+        currentStatus = finalStatus
         
-        summary = createSummary()
+        summary = createSummary(wasCancelled: wasCancelled)
         isCleaning = false
     }
     
-    private func cleanWithAuthorization(category: any CleanupCategory, moveToTrash: Bool = true) async throws -> CleanupResult {
+    /// Apple-owned cache folders that cannot be removed even with administrator rights.
+    private static let protectedSystemCacheNames = [
+        "com.apple.amsengagementd.classicdatavault",
+        "com.apple.aned",
+        "com.apple.aneuserd"
+    ]
+    
+    /// Cleans a system location through `osascript ... with administrator privileges`.
+    /// The shell commands are fixed strings scoped to one folder; nothing user-provided is interpolated.
+    private func cleanWithAuthorization(category: any CleanupCategory) async throws -> CleanupResult {
         let startTime = Date()
         
-        let path: String
+        let shellCommand: String
         switch category.type {
         case .systemCaches:
-            path = "/Library/Caches"
+            // Remove each top-level cache folder except the protected Apple ones
+            let exclusions = Self.protectedSystemCacheNames
+                .map { "! -name '\($0)'" }
+                .joined(separator: " ")
+            shellCommand = "/usr/bin/find /Library/Caches -mindepth 1 -maxdepth 1 \(exclusions) -exec /bin/rm -rf {} + 2>/dev/null; exit 0"
         case .systemLogs:
-            path = "/var/log"
+            // Only rotated and archived logs; live log files and folders stay in place
+            shellCommand = "/usr/bin/find /private/var/log -type f \\( -name '*.gz' -o -name '*.bz2' -o -name '*.old' -o -name '*.[0-9]' \\) -delete 2>/dev/null; exit 0"
         default:
             throw CleanupError.invalidPath
         }
         
-        // The AppleScript below will trigger the standard macOS admin password prompt when needed
-        // Exclude protected Apple system caches that can't be deleted even with admin
-        // Use a simpler approach: delete all except protected ones, ignore errors for protected files
-        let protected = "com.apple.amsengagementd.classicdatavault com.apple.aned com.apple.aneuserd"
-        let script = "do shell script \"cd '\(path)' && for f in *; do if ! echo '\(protected)' | grep -q \\\"$f\\\"; then rm -rf \\\"$f\\\" 2>/dev/null || true; fi; done\" with administrator privileges"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        if process.terminationStatus != 0 {
-            // Read error output
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorText = String(data: errorData, encoding: .utf8) ?? ""
-            
-            // Check if it's just protected files that couldn't be deleted
-            // If so, that's okay - we still succeeded in cleaning what we could
-            if errorText.contains("Operation not permitted") {
-                // Some protected files couldn't be deleted, but that's expected
-                // Return success since we cleaned what we could
-                return CleanupResult(
-                    category: category.type,
-                    success: true,
-                    itemsDeleted: 0,
-                    spaceFreed: 0,
-                    duration: Date().timeIntervalSince(startTime)
-                )
-            }
-            
-            // Real error - throw it
-            print("Cleanup failed: \(errorText)")
-            throw CleanupError.deletionFailed("Some files could not be deleted: \(errorText)")
-        }
+        let before = try await category.scan()
+        try await Self.runWithAdministratorPrivileges(shellCommand)
+        let after = try await category.scan()
         
         return CleanupResult(
             category: category.type,
             success: true,
-            itemsDeleted: 0,
-            spaceFreed: 0,
+            itemsDeleted: max(0, before.itemCount - after.itemCount),
+            spaceFreed: max(0, before.estimatedSize - after.estimatedSize),
             duration: Date().timeIntervalSince(startTime)
         )
     }
     
-    private func createSummary() -> CleanupSummary {
+    /// Runs a shell command behind the macOS administrator password prompt without blocking the UI.
+    private static func runWithAdministratorPrivileges(_ shellCommand: String) async throws {
+        let escapedCommand = shellCommand
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "do shell script \"\(escapedCommand)\" with administrator privileges"
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        process.standardOutput = FileHandle.nullDevice
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        
+        let status: Int32 = try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { @Sendable finishedProcess in
+                continuation.resume(returning: finishedProcess.terminationStatus)
+            }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(throwing: error)
+            }
+        }
+        
+        guard status == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorText = String(data: errorData, encoding: .utf8) ?? ""
+            // -128 is AppleScript's "User canceled" error
+            if errorText.contains("-128") || errorText.localizedCaseInsensitiveContains("canceled") {
+                throw CleanupError.authorizationFailed
+            }
+            throw CleanupError.deletionFailed(errorText.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+    
+    private func createSummary(wasCancelled: Bool) -> CleanupSummary {
         let totalItems = results.reduce(0) { $0 + $1.itemsDeleted }
-        let totalSpace = results.reduce(0) { $0 + $1.spaceFreed }
+        let freed = results.filter { !$0.movedToTrash }.reduce(0) { $0 + $1.spaceFreed }
+        let movedToTrash = results.filter { $0.movedToTrash }.reduce(0) { $0 + $1.spaceFreed }
         let successful = results.filter { $0.success }.count
         let failed = results.filter { !$0.success }.count
         
         return CleanupSummary(
             totalItemsDeleted: totalItems,
-            totalSpaceFreed: totalSpace,
+            totalSpaceFreed: freed,
+            totalSpaceMovedToTrash: movedToTrash,
             successfulCategories: successful,
             failedCategories: failed,
+            wasCancelled: wasCancelled,
             results: results
         )
     }
@@ -387,23 +395,42 @@ struct SystemLogsCategory: CleanupCategory {
     let type: CleanupCategoryType = .systemLogs
     let requiresAdmin = true
     
+    /// Rotated or archived logs that are safe to remove; live logs are left alone.
+    static func isRotatedLog(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        if ["gz", "bz2", "old"].contains(url.pathExtension) { return true }
+        return name.range(of: #"\.[0-9]$"#, options: .regularExpression) != nil
+    }
+    
     func scan() async throws -> CleanupScanResult {
+        let logsURL = URL(fileURLWithPath: "/private/var/log")
         let fileManager = FileManager.default
-        let logsURL = URL(fileURLWithPath: "/var/log")
         
-        guard fileManager.fileExists(atPath: logsURL.path) else {
+        guard let enumerator = fileManager.enumerator(
+            at: logsURL,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [],
+            errorHandler: nil
+        ) else {
             return CleanupScanResult(category: type, itemCount: 0, estimatedSize: 0, paths: [])
         }
         
-        let size = fileManager.sizeOfDirectory(at: logsURL)
-        let count = fileManager.countItems(in: logsURL)
+        var count = 0
+        var size: Int64 = 0
+        for case let fileURL as URL in enumerator where Self.isRotatedLog(fileURL) {
+            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            count += 1
+            size += Int64(values?.fileSize ?? 0)
+        }
         
-        return CleanupScanResult(
-            category: type,
-            itemCount: count,
-            estimatedSize: size,
-            paths: [logsURL]
-        )
+        return CleanupScanResult(category: type, itemCount: count, estimatedSize: size, paths: [logsURL])
+    }
+    
+    func scanDetailed() async throws -> [CleanupFile] {
+        // The preview only lists what the cleanup would actually remove
+        await CleanupCategoryDefaults.scanFiles(in: [URL(fileURLWithPath: "/private/var/log")])
+            .filter { Self.isRotatedLog($0.url) }
     }
     
     func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
@@ -524,9 +551,9 @@ struct FirefoxCacheCategory: CleanupCategory {
     
     func scan() async throws -> CleanupScanResult {
         let fileManager = FileManager.default
-        // Firefox cache is typically in Application Support, not Caches
+        // On macOS Firefox keeps its disk cache in ~/Library/Caches, not in the profile folder
         let firefoxCacheURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Firefox/Profiles")
+            .appendingPathComponent("Library/Caches/Firefox/Profiles")
         
         guard fileManager.fileExists(atPath: firefoxCacheURL.path) else {
             return CleanupScanResult(category: type, itemCount: 0, estimatedSize: 0, paths: [])
@@ -535,6 +562,7 @@ struct FirefoxCacheCategory: CleanupCategory {
         // Look for cache directories in Firefox profiles
         var totalSize: Int64 = 0
         var totalCount = 0
+        var cacheDirectories: [URL] = []
         
         if let profiles = try? fileManager.contentsOfDirectory(at: firefoxCacheURL, includingPropertiesForKeys: nil) {
             for profile in profiles {
@@ -542,15 +570,17 @@ struct FirefoxCacheCategory: CleanupCategory {
                 if fileManager.fileExists(atPath: cacheDir.path) {
                     totalSize += fileManager.sizeOfDirectory(at: cacheDir)
                     totalCount += fileManager.countItems(in: cacheDir)
+                    cacheDirectories.append(cacheDir)
                 }
             }
         }
         
+        // Report only the cache2 folders so the file preview never lists other profile data
         return CleanupScanResult(
             category: type,
             itemCount: totalCount,
             estimatedSize: totalSize,
-            paths: [firefoxCacheURL]
+            paths: cacheDirectories
         )
     }
     
@@ -558,7 +588,7 @@ struct FirefoxCacheCategory: CleanupCategory {
         let startTime = Date()
         let fileManager = FileManager.default
         let firefoxCacheURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Firefox/Profiles")
+            .appendingPathComponent("Library/Caches/Firefox/Profiles")
         
         guard fileManager.fileExists(atPath: firefoxCacheURL.path) else {
             // error parameter before duration to match struct's parameter order
