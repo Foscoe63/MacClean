@@ -159,11 +159,7 @@ struct MenuBarView: View {
     
     private func loadDiskSpace() {
         Task {
-            let fileManager = FileManager.default
-            if let homeURL = fileManager.urls(for: .userDirectory, in: .userDomainMask).first,
-               let attributes = try? fileManager.attributesOfFileSystem(forPath: homeURL.path),
-               let total = attributes[.systemSize] as? Int64,
-               let free = attributes[.systemFreeSize] as? Int64 {
+            if let diskSpace = DiskSpace.current(), case let (total, free) = (diskSpace.total, diskSpace.available) {
                 await MainActor.run {
                     diskSpaceTotal = total
                     diskSpaceAvailable = free
@@ -176,9 +172,8 @@ struct MenuBarView: View {
         isScanning = true
         Task {
             // Quick scan of common categories
-            let quickCategories: Set<CleanupCategoryType> = [
-                .userCaches, .downloads, .trash
-            ]
+            // Only categories that apps can rebuild; personal files are never part of a one-click clean
+            let quickCategories = CleanupCategoryType.safeDefaults
             let results = await cleanupEngine.scanCategories(quickCategories)
             await MainActor.run {
                 quickScanResults = results
@@ -191,10 +186,11 @@ struct MenuBarView: View {
         guard !quickScanResults.isEmpty else { return }
         
         let moveToTrash = preferencesManager.preferences.moveToTrash
+        let protectedPaths = preferencesManager.preferences.protectedPaths
         
         Task {
             // Use the scan results directly as CleanupItems
-            await cleanupEngine.cleanCategories(quickScanResults, moveToTrash: moveToTrash) { progress, status in
+            await cleanupEngine.cleanCategories(quickScanResults, moveToTrash: moveToTrash, protectedPaths: protectedPaths) { progress, status in
                 Task { @MainActor in
                     cleanupEngine.currentProgress = progress
                     cleanupEngine.currentStatus = status

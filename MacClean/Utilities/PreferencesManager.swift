@@ -35,7 +35,7 @@ class PreferencesManager {
         
         // Recalculate totalSpaceFreed from history to ensure accuracy
         // This fixes any incorrect values from before the moveToTrash fix
-        let historyManager = CleanupHistoryManager()
+        let historyManager = CleanupHistoryManager.shared
         self.preferences.totalSpaceFreed = historyManager.totalSpaceFreed
     }
     

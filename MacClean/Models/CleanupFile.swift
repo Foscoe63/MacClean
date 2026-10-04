@@ -1,13 +1,13 @@
 import Foundation
 
-struct CleanupFile: Identifiable, Codable, Equatable, Hashable, Sendable {
+nonisolated struct CleanupFile: Identifiable, Codable, Equatable, Hashable, Sendable {
     let id: UUID
     let path: String
     let size: Int64
     let modificationDate: Date
     var isExcluded: Bool
     
-    nonisolated init(
+    init(
         id: UUID = UUID(),
         path: String,
         size: Int64,

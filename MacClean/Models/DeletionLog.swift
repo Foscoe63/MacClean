@@ -1,6 +1,6 @@
 import Foundation
 
-struct DeletionLogEntry: Codable, Identifiable {
+nonisolated struct DeletionLogEntry: Codable, Identifiable, Sendable {
     let id: UUID
     let timestamp: Date
     let filePath: String
@@ -8,6 +8,8 @@ struct DeletionLogEntry: Codable, Identifiable {
     let category: String
     let success: Bool
     let errorMessage: String?
+    /// Where the item landed in the Trash, so it can be put back. `nil` for permanent deletions.
+    let trashPath: String?
     
     init(
         id: UUID = UUID(),
@@ -16,7 +18,8 @@ struct DeletionLogEntry: Codable, Identifiable {
         fileSize: Int64,
         category: String,
         success: Bool = true,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        trashPath: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -25,6 +28,7 @@ struct DeletionLogEntry: Codable, Identifiable {
         self.category = category
         self.success = success
         self.errorMessage = errorMessage
+        self.trashPath = trashPath
     }
 }
 
@@ -49,27 +53,34 @@ class DeletionLogManager {
         fileSize: Int64,
         category: String,
         success: Bool = true,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        trashPath: String? = nil
     ) {
-        let entry = DeletionLogEntry(
-            filePath: filePath,
-            fileSize: fileSize,
-            category: category,
-            success: success,
-            errorMessage: errorMessage
-        )
+        logDeletions([
+            DeletionLogEntry(
+                filePath: filePath,
+                fileSize: fileSize,
+                category: category,
+                success: success,
+                errorMessage: errorMessage,
+                trashPath: trashPath
+            )
+        ])
+    }
+    
+    /// Appends a batch of entries with a single read and write of the log file.
+    func logDeletions(_ newEntries: [DeletionLogEntry]) {
+        guard !newEntries.isEmpty else { return }
         
         var entries = loadLogEntries()
-        entries.append(entry)
+        entries.append(contentsOf: newEntries)
         
         // Keep only last 10,000 entries to prevent log file from growing too large
         if entries.count > 10_000 {
             entries = Array(entries.suffix(10_000))
         }
         
-        print("Logging deletion: \(filePath) (\(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file))) - Category: \(category) - Success: \(success)")
         saveLogEntries(entries)
-        print("Saved \(entries.count) total log entries to: \(logFileURL.path)")
     }
     
     func getAllLogEntries() -> [DeletionLogEntry] {
@@ -115,7 +126,6 @@ class DeletionLogManager {
         let filePath = logFileURL.path
         
         guard FileManager.default.fileExists(atPath: filePath) else {
-            print("Deletion log file does not exist at: \(filePath)")
             return []
         }
         
@@ -133,9 +143,7 @@ class DeletionLogManager {
         decoder.dateDecodingStrategy = .iso8601
         
         do {
-            let entries = try decoder.decode([DeletionLogEntry].self, from: data)
-            print("Loaded \(entries.count) deletion log entries from: \(filePath)")
-            return entries
+            return try decoder.decode([DeletionLogEntry].self, from: data)
         } catch {
             print("Failed to decode deletion log: \(error)")
             print("Log file path: \(filePath)")

@@ -47,7 +47,7 @@ struct CleanupAnalytics {
 class CleanupAnalyticsManager {
     static let shared = CleanupAnalyticsManager()
     
-    private let historyManager = CleanupHistoryManager()
+    private let historyManager = CleanupHistoryManager.shared
     
     private init() {}
     
@@ -131,11 +131,7 @@ class CleanupAnalyticsManager {
     }
     
     private func calculateDiskSpaceGrowth() -> CleanupAnalytics.DiskSpaceGrowth {
-        let fileManager = FileManager.default
-        guard let homeURL = fileManager.urls(for: .userDirectory, in: .userDomainMask).first,
-              let attributes = try? fileManager.attributesOfFileSystem(forPath: homeURL.path),
-              let total = attributes[.systemSize] as? Int64,
-              let free = attributes[.systemFreeSize] as? Int64 else {
+        guard let diskSpace = DiskSpace.current(), case let (total, free) = (diskSpace.total, diskSpace.available) else {
             return CleanupAnalytics.DiskSpaceGrowth(
                 growthRate: 0,
                 projectedFullDate: nil as Date?,

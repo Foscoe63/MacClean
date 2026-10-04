@@ -19,11 +19,15 @@ struct ContentView: View {
     @State private var showDiskUsage = false
     @State private var showAnalytics = false
     @State private var showSystemHealth = false
+    @State private var showLargeFiles = false
+    @State private var hasFullDiskAccess = FullDiskAccess.isGranted
     @State private var lastCleanupSpaceFreed: Int64 = 0
     @State private var cleanupTask: Task<Void, Never>?
     private let notificationService = NotificationService.shared
-    private let historyManager = CleanupHistoryManager()
-    private let undoManager = UndoManager.shared
+    private let historyManager = CleanupHistoryManager.shared
+    private let undoManager = CleanupUndoManager.shared
+    @State private var undoResultMessage = ""
+    @State private var showUndoResult = false
     
     private var totalSpaceToClean: Int64 {
         cleanupItems
@@ -35,7 +39,21 @@ struct ContentView: View {
     private var confirmationMessage: String {
         let categoryText = selectedCategories.count == 1 ? "category" : "categories"
         let spaceText = ByteCountFormatter.string(fromByteCount: totalSpaceToClean, countStyle: .file)
-        return "You are about to clean \(selectedCategories.count) \(categoryText), freeing approximately \(spaceText). This action cannot be undone."
+        let destination = preferencesManager.preferences.moveToTrash
+            ? "Items will be moved to the Trash."
+            : "Items will be deleted permanently. This cannot be undone."
+        var message = "You are about to clean \(selectedCategories.count) \(categoryText) (about \(spaceText)). \(destination)"
+        let personalCategories = selectedCategories
+            .filter { $0.riskLevel == .personalData }
+            .map(\.displayName)
+            .sorted()
+        if !personalCategories.isEmpty {
+            message += "\n\nWarning: this includes your personal files in \(personalCategories.joined(separator: ", "))."
+        }
+        if selectedCategories.contains(where: { $0.requiresAdminCleanup }) {
+            message += "\n\nSystem caches and logs are always deleted permanently and need your administrator password."
+        }
+        return message
     }
     
     private var shouldShowSizeWarning: Bool {
@@ -82,6 +100,15 @@ struct ContentView: View {
                     .padding(.top, 8)
                 }
                 
+                if !hasFullDiskAccess {
+                    FullDiskAccessBanner {
+                        FullDiskAccess.openSettings()
+                    } onRecheck: {
+                        hasFullDiskAccess = FullDiskAccess.isGranted
+                    }
+                    .padding(.horizontal)
+                }
+                
                 HStack {
                     Text("Cleanup Categories")
                         .font(.headline)
@@ -90,9 +117,10 @@ struct ContentView: View {
                     
                     if !cleanupItems.isEmpty {
                         HStack(spacing: 8) {
-                            Button("Select All") {
-                                selectedCategories = Set(cleanupItems.map { $0.category })
+                            Button("Select Safe") {
+                                selectedCategories = Set(cleanupItems.map { $0.category }.filter { $0.riskLevel == .safe })
                             }
+                            .help("Select caches and logs that apps can rebuild")
                             .buttonStyle(.borderless)
                             .font(.caption)
                             
@@ -147,7 +175,7 @@ struct ContentView: View {
                     .accessibilityLabel("Scan for cleanup items")
                     .buttonStyle(.borderedProminent)
                     .disabled(isScanning || cleanupEngine.isCleaning)
-                    .keyboardShortcut("s", modifiers: .command)
+                    .keyboardShortcut("r", modifiers: .command)
                     
                     Button(action: startCleanup) {
                         HStack {
@@ -160,7 +188,6 @@ struct ContentView: View {
                     .accessibilityLabel("Start cleaning selected categories")
                     .buttonStyle(.bordered)
                     .disabled(selectedCategories.isEmpty || cleanupEngine.isCleaning)
-                    .keyboardShortcut("c", modifiers: .command)
                 }
                 .padding()
         }
@@ -179,8 +206,9 @@ struct ContentView: View {
                             )
                             
                             Button("Cancel") {
+                                // The engine stops after the current item and reports what was already cleaned
                                 cleanupTask?.cancel()
-                                cleanupEngine.isCleaning = false
+                                cleanupEngine.currentStatus = "Cancelling..."
                             }
                             .buttonStyle(.bordered)
                         }
@@ -219,6 +247,11 @@ struct ContentView: View {
                 Image(systemName: "chart.pie.fill")
             }
             .help("View Disk Usage")
+            
+            Button(action: { showLargeFiles = true }) {
+                Image(systemName: "doc.text.magnifyingglass")
+            }
+            .help("Find Large Files")
             
             Button(action: { showHistory = true }) {
                 Image(systemName: "clock.arrow.circlepath")
@@ -267,6 +300,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showDiskUsage) {
             DiskUsageView()
+        }
+        .sheet(isPresented: $showLargeFiles) {
+            LargeFilesView()
         }
         .sheet(isPresented: $showAnalytics) {
             CleanupAnalyticsView()
@@ -326,14 +362,21 @@ struct ContentView: View {
         }
         .alert("Cleanup Complete", isPresented: $showUndoAlert) {
             Button("Undo") {
-                if undoManager.undoLastCleanup() {
-                    // Refresh UI
-                    scanForCleanup()
-                }
+                let outcome = undoManager.undoLastCleanup()
+                undoResultMessage = outcome.failed == 0
+                    ? "Restored \(outcome.restored) items from the Trash."
+                    : "Restored \(outcome.restored) items. \(outcome.failed) could not be restored because they are no longer in the Trash or their original location is in use."
+                showUndoResult = true
+                scanForCleanup()
             }
             Button("OK", role: .cancel) { }
         } message: {
             Text("Moved \(ByteCountFormatter.string(fromByteCount: lastCleanupSpaceFreed, countStyle: .file)) to Trash. Empty Trash to free up space. You can undo this action.")
+        }
+        .alert("Undo Cleanup", isPresented: $showUndoResult) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(undoResultMessage)
         }
         .onAppear {
             loadSelectedCategories()
@@ -353,8 +396,9 @@ struct ContentView: View {
     }
     
     private func loadSelectedCategories() {
-        // Load enabled categories from preferences
+        // Pre-select only categories that are safe to clean; riskier ones need an explicit click
         selectedCategories = preferencesManager.preferences.enabledCategories
+            .filter { $0.riskLevel == .safe }
     }
     
     private func scanForCleanup() {
@@ -368,7 +412,7 @@ struct ContentView: View {
             await MainActor.run {
                 cleanupItems = items
                 if selectedCategories.isEmpty {
-                    selectedCategories = Set(items.map { $0.category })
+                    selectedCategories = Set(items.map { $0.category }.filter { $0.riskLevel == .safe })
                 }
                 isScanning = false
                 
@@ -413,13 +457,9 @@ struct ContentView: View {
             }
             
             await MainActor.run {
-                // Update preferences with selected categories
-                preferencesManager.preferences.enabledCategories = selectedCategories
-                
                 // Update total space freed counter and history
                 if let summary = cleanupEngine.summary {
-                    // Track the space freed regardless of moveToTrash setting
-                    // This gives users accurate statistics about their cleanup work
+                    // Only permanent deletions free space; items in the Trash are counted once the Trash is emptied
                     let spaceFreed = summary.totalSpaceFreed
                     
                     // Add to history
@@ -440,21 +480,23 @@ struct ContentView: View {
                     if moveToTrash {
                         // Get recent deletion log entries for undo
                         let recentEntries = DeletionLogManager.shared.getLogEntries(since: startTime)
-                        let deletedFiles = recentEntries.filter { $0.success }.map { entry in
-                            UndoEntry.DeletedFileInfo(
-                                originalPath: entry.filePath,
-                                trashPath: nil, // Trash path will be determined during restore
-                                size: entry.fileSize
-                            )
-                        }
+                        let deletedFiles = recentEntries
+                            .filter { $0.success && $0.trashPath != nil }
+                            .map { entry in
+                                UndoEntry.DeletedFileInfo(
+                                    originalPath: entry.filePath,
+                                    trashPath: entry.trashPath,
+                                    size: entry.fileSize
+                                )
+                            }
                         
                         if !deletedFiles.isEmpty {
                             undoManager.addUndoEntry(
                                 category: selectedCategories.map { $0.displayName }.joined(separator: ", "),
                                 filesDeleted: deletedFiles,
-                                spaceFreed: summary.totalSpaceFreed // Store original size for undo
+                                spaceFreed: summary.totalSpaceMovedToTrash
                             )
-                            lastCleanupSpaceFreed = summary.totalSpaceFreed
+                            lastCleanupSpaceFreed = deletedFiles.reduce(0) { $0 + $1.size }
                             
                             // Show undo alert
                             showUndoAlert = true
@@ -466,7 +508,7 @@ struct ContentView: View {
                         notificationService.sendCleanupCompleteNotification(
                             spaceFreed: spaceFreed,
                             itemsDeleted: summary.totalItemsDeleted,
-                            movedToTrash: moveToTrash
+                            movedToTrash: moveToTrash && spaceFreed == 0
                         )
                     }
                 }
@@ -544,6 +586,31 @@ struct ContentView: View {
     }
 }
 
+struct FullDiskAccessBanner: View {
+    let onOpenSettings: () -> Void
+    let onRecheck: () -> Void
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Full Disk Access is off", systemImage: "lock.shield")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Text("Without it, MacClean can't measure or clean Safari, Mail and some app caches, or empty the Trash.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Open Settings", action: onOpenSettings)
+                Button("Check Again", action: onRecheck)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+    }
+}
+
 struct CleanupItemRow: View {
     let item: CleanupItem
     let isSelected: Bool
@@ -566,6 +633,12 @@ struct CleanupItemRow: View {
                     Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
                         .font(.caption2)
                         .foregroundColor(.blue)
+                }
+
+                if let warning = item.category.riskLevel.warningText {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundColor(item.category.riskLevel == .personalData ? .red : .orange)
                 }
             }
 
@@ -726,9 +799,9 @@ struct CleanupResultsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                Text("Cleanup Complete")
+                Image(systemName: summary.wasCancelled ? "stop.circle.fill" : "checkmark.circle.fill")
+                    .foregroundColor(summary.wasCancelled ? .orange : .green)
+                Text(summary.wasCancelled ? "Cleanup Cancelled" : "Cleanup Complete")
                     .font(.headline)
                 
                 Spacer()
@@ -748,6 +821,18 @@ struct CleanupResultsSection: View {
                         .font(.title2)
                         .fontWeight(.bold)
                         .foregroundColor(.green)
+                }
+                
+                if summary.totalSpaceMovedToTrash > 0 {
+                    VStack(alignment: .leading) {
+                        Text("Moved to Trash")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(summary.formattedSpaceMovedToTrash)
+                            .font(.title2)
+                            .fontWeight(.bold)
+                    }
+                    .help("Empty the Trash to free this space")
                 }
                 
                 VStack(alignment: .leading) {
@@ -802,7 +887,7 @@ struct CleanupResultRow: View {
                     .font(.subheadline)
                 
                 if result.success {
-                    Text("\(result.itemsDeleted) items • \(ByteCountFormatter.string(fromByteCount: result.spaceFreed, countStyle: .file))")
+                    Text("\(result.itemsDeleted) items • \(ByteCountFormatter.string(fromByteCount: result.spaceFreed, countStyle: .file))\(result.movedToTrash ? " moved to Trash" : " freed")")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else if let error = result.error {

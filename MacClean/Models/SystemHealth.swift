@@ -40,7 +40,7 @@ struct SystemHealth {
 @Observable
 class SystemHealthManager {
     private let cleanupEngine: CleanupEngine
-    private let historyManager = CleanupHistoryManager()
+    private let historyManager = CleanupHistoryManager.shared
     private let analyticsManager = CleanupAnalyticsManager.shared
     
     init(cleanupEngine: CleanupEngine) {
@@ -64,11 +64,7 @@ class SystemHealthManager {
     }
     
     private func calculateDiskHealthScore() async -> Double {
-        let fileManager = FileManager.default
-        guard let homeURL = fileManager.urls(for: .userDirectory, in: .userDomainMask).first,
-              let attributes = try? fileManager.attributesOfFileSystem(forPath: homeURL.path),
-              let total = attributes[.systemSize] as? Int64,
-              let free = attributes[.systemFreeSize] as? Int64 else {
+        guard let diskSpace = DiskSpace.current(), case let (total, free) = (diskSpace.total, diskSpace.available) else {
             return 0.5
         }
         
@@ -88,13 +84,9 @@ class SystemHealthManager {
     }
     
     private func gatherPerformanceMetrics() async -> SystemHealth.PerformanceMetrics {
-        let fileManager = FileManager.default
         var diskUsagePercent: Double = 0
         
-        if let homeURL = fileManager.urls(for: .userDirectory, in: .userDomainMask).first,
-           let attributes = try? fileManager.attributesOfFileSystem(forPath: homeURL.path),
-           let total = attributes[.systemSize] as? Int64,
-           let free = attributes[.systemFreeSize] as? Int64 {
+        if let diskSpace = DiskSpace.current(), case let (total, free) = (diskSpace.total, diskSpace.available) {
             let used = total - free
             diskUsagePercent = Double(used) / Double(total) * 100
         }

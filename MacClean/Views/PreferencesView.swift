@@ -96,7 +96,7 @@ struct AISettingsPreferencesView: View {
                     set: { preferencesManager.preferences.aiServiceType = $0 }
                 )) {
                     Text("LM Studio").tag(AIServiceType.lmStudio)
-                    Text("Siri AI").tag(AIServiceType.siriAI)
+                    Text("Apple Intelligence").tag(AIServiceType.siriAI)
                 }
                 .pickerStyle(.segmented)
             }
@@ -138,13 +138,8 @@ struct AISettingsPreferencesView: View {
                     }
                 }
             } else {
-                Section("Siri AI Configuration") {
-                    Toggle("Enable Siri AI", isOn: Binding(
-                        get: { preferencesManager.preferences.siriAIEnabled },
-                        set: { preferencesManager.preferences.siriAIEnabled = $0 }
-                    ))
-                    
-                    Text("Siri AI uses on-device processing for privacy. No configuration needed.")
+                Section("Apple Intelligence") {
+                    Text(AppleIntelligenceService.availabilityDescription)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

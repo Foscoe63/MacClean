@@ -30,36 +30,39 @@ extension CleanupCategory {
     
     func scanDetailed() async throws -> [CleanupFile] {
         let scanResult = try await scan()
-        
-        // Run file enumeration in a task to avoid blocking and fix async iterator issue
-        return await Task.detached(priority: .userInitiated) {
-            var files: [CleanupFile] = []
-            for url in scanResult.paths {
-                files.append(contentsOf: FileScanner.scanFilesSync(at: url))
-            }
-            return files
-        }.value
+        return await CleanupCategoryDefaults.scanFiles(in: scanResult.paths)
     }
     
     func clean(moveToTrash: Bool, files: [CleanupFile]?, protectedPaths: [String]) async throws -> CleanupResult {
-        if let files = files {
-            let startTime = Date()
-            let fileManager = FileManager.default
-            let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteFiles(files, category: name, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
-            
-            return CleanupResult(
-                category: type,
-                success: true,
-                itemsDeleted: itemsDeleted,
-                spaceFreed: spaceFreed,
-                duration: Date().timeIntervalSince(startTime)
-            )
+        // Without a reviewed file list, clean the whole category
+        guard let files else {
+            return try await clean(moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         }
-        // Default implementation ignores files and calls standard clean
-        // This ensures backward compatibility until individual categories are updated
-        return try await clean(moveToTrash: moveToTrash, protectedPaths: protectedPaths)
+        
+        let startTime = Date()
+        let outcome = await BackgroundFileWork.deleteFiles(
+            files,
+            category: name,
+            moveToTrash: moveToTrash,
+            protectedPaths: protectedPaths
+        )
+        DeletionLogManager.shared.logDeletions(outcome.logEntries)
+        
+        return CleanupResult(
+            category: type,
+            success: true,
+            itemsDeleted: outcome.itemsDeleted,
+            spaceFreed: outcome.spaceFreed,
+            duration: Date().timeIntervalSince(startTime)
+        )
     }
 }
 
-
-
+enum CleanupCategoryDefaults {
+    /// Lists the regular files under the given folders off the main thread.
+    static func scanFiles(in urls: [URL]) async -> [CleanupFile] {
+        await Task.detached(priority: .userInitiated) {
+            urls.flatMap { FileScanner.scanFilesSync(at: $0) }
+        }.value
+    }
+}
