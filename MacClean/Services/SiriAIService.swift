@@ -117,9 +117,6 @@ struct SiriAIService: AIServiceProtocol {
                 case .homebrewCache:
                     reason = "Homebrew cache can be safely cleared. Packages will be re-downloaded when needed."
                     confidence = 0.85
-                case .dockerCache:
-                    reason = "Docker cache can be cleared to free space. Images will be re-downloaded when needed."
-                    confidence = 0.75
                 case .spotifyCache, .slackCache, .zoomCache:
                     reason = "Application cache can be safely cleared. App will regenerate cache as needed."
                     confidence = 0.8

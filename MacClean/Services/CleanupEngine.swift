@@ -35,8 +35,6 @@ class CleanupEngine {
             NPMCacheCategory(),
             CocoaPodsCacheCategory(),
             HomebrewCacheCategory(),
-            // Docker
-            DockerCacheCategory(),
             // More browsers
             EdgeCacheCategory(),
             BraveCacheCategory(),
@@ -927,52 +925,6 @@ struct HomebrewCacheCategory: CleanupCategory {
         }
         
         let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: homebrewCacheURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
-        
-        return CleanupResult(
-            category: type,
-            success: true,
-            itemsDeleted: itemsDeleted,
-            spaceFreed: spaceFreed,
-            duration: Date().timeIntervalSince(startTime)
-        )
-    }
-}
-
-struct DockerCacheCategory: CleanupCategory {
-    let type: CleanupCategoryType = .dockerCache
-    let requiresAdmin = false
-    
-    func scan() async throws -> CleanupScanResult {
-        let fileManager = FileManager.default
-        let dockerURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Containers/com.docker.docker/Data/vms/0")
-        
-        guard fileManager.fileExists(atPath: dockerURL.path) else {
-            return CleanupScanResult(category: type, itemCount: 0, estimatedSize: 0, paths: [])
-        }
-        
-        let size = fileManager.sizeOfDirectory(at: dockerURL)
-        let count = fileManager.countItems(in: dockerURL)
-        
-        return CleanupScanResult(
-            category: type,
-            itemCount: count,
-            estimatedSize: size,
-            paths: [dockerURL]
-        )
-    }
-    
-    func clean(moveToTrash: Bool, protectedPaths: [String]) async throws -> CleanupResult {
-        let startTime = Date()
-        let fileManager = FileManager.default
-        let dockerURL = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Containers/com.docker.docker/Data/vms/0")
-        
-        guard fileManager.fileExists(atPath: dockerURL.path) else {
-            return CleanupResult(category: type, success: true, duration: Date().timeIntervalSince(startTime))
-        }
-        
-        let (itemsDeleted, spaceFreed) = try fileManager.safeDeleteContents(of: dockerURL, category: type.displayName, moveToTrash: moveToTrash, protectedPaths: protectedPaths)
         
         return CleanupResult(
             category: type,

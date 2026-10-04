@@ -48,8 +48,6 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
     case npmCache = "npm_cache"
     case cocoapodsCache = "cocoapods_cache"
     case homebrewCache = "homebrew_cache"
-    // Docker
-    case dockerCache = "docker_cache"
     // More browsers
     case edgeCache = "edge_cache"
     case braveCache = "brave_cache"
@@ -76,7 +74,6 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
         case .npmCache: return "npm Cache"
         case .cocoapodsCache: return "CocoaPods Cache"
         case .homebrewCache: return "Homebrew Cache"
-        case .dockerCache: return "Docker Cache"
         case .edgeCache: return "Edge Cache"
         case .braveCache: return "Brave Cache"
         case .spotifyCache: return "Spotify Cache"
@@ -102,7 +99,6 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
         case .npmCache: return "npm package manager cache"
         case .cocoapodsCache: return "CocoaPods dependency cache"
         case .homebrewCache: return "Homebrew package cache"
-        case .dockerCache: return "Docker images, containers, and build cache"
         case .edgeCache: return "Microsoft Edge browser cache"
         case .braveCache: return "Brave browser cache"
         case .spotifyCache: return "Spotify application cache"
