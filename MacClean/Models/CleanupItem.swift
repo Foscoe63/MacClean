@@ -48,6 +48,12 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
     case npmCache = "npm_cache"
     case cocoapodsCache = "cocoapods_cache"
     case homebrewCache = "homebrew_cache"
+    case swiftPMCache = "swiftpm_cache"
+    case simulatorCaches = "simulator_caches"
+    case xcodeDeviceSupport = "xcode_device_support"
+    case gradleCache = "gradle_cache"
+    case pipCache = "pip_cache"
+    case yarnCache = "yarn_cache"
     // More browsers
     case edgeCache = "edge_cache"
     case braveCache = "brave_cache"
@@ -74,6 +80,12 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
         case .npmCache: return "npm Cache"
         case .cocoapodsCache: return "CocoaPods Cache"
         case .homebrewCache: return "Homebrew Cache"
+        case .swiftPMCache: return "Swift Package Manager Cache"
+        case .simulatorCaches: return "Simulator Caches"
+        case .xcodeDeviceSupport: return "Xcode Device Support"
+        case .gradleCache: return "Gradle Cache"
+        case .pipCache: return "pip Cache"
+        case .yarnCache: return "Yarn Cache"
         case .edgeCache: return "Edge Cache"
         case .braveCache: return "Brave Cache"
         case .spotifyCache: return "Spotify Cache"
@@ -99,6 +111,12 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
         case .npmCache: return "npm package manager cache"
         case .cocoapodsCache: return "CocoaPods dependency cache"
         case .homebrewCache: return "Homebrew package cache"
+        case .swiftPMCache: return "Downloaded Swift packages, fetched again on the next build"
+        case .simulatorCaches: return "iOS Simulator caches"
+        case .xcodeDeviceSupport: return "Debug symbols for devices you have connected; re-copied when a device is plugged in"
+        case .gradleCache: return "Gradle build and dependency cache"
+        case .pipCache: return "Python pip download cache"
+        case .yarnCache: return "Yarn package cache"
         case .edgeCache: return "Microsoft Edge browser cache"
         case .braveCache: return "Brave browser cache"
         case .spotifyCache: return "Spotify application cache"
@@ -113,9 +131,10 @@ enum CleanupCategoryType: String, Codable, CaseIterable {
         switch self {
         case .userCaches, .userLogs, .safariCache, .chromeCache, .firefoxCache,
              .xcodeDerivedData, .npmCache, .cocoapodsCache, .homebrewCache,
+             .swiftPMCache, .simulatorCaches, .gradleCache, .pipCache, .yarnCache,
              .edgeCache, .braveCache, .spotifyCache, .slackCache, .zoomCache:
             return .safe
-        case .systemCaches, .systemLogs, .trash, .xcodeArchives:
+        case .systemCaches, .systemLogs, .trash, .xcodeArchives, .xcodeDeviceSupport:
             return .review
         case .downloads, .iosBackups:
             return .personalData

@@ -117,6 +117,15 @@ struct SiriAIService: AIServiceProtocol {
                 case .homebrewCache:
                     reason = "Homebrew cache can be safely cleared. Packages will be re-downloaded when needed."
                     confidence = 0.85
+                case .swiftPMCache, .gradleCache, .pipCache, .yarnCache:
+                    reason = "Package manager cache can be safely cleared. Packages will be re-downloaded when needed."
+                    confidence = 0.85
+                case .simulatorCaches:
+                    reason = "Simulator caches are rebuilt automatically the next time a simulator runs."
+                    confidence = 0.85
+                case .xcodeDeviceSupport:
+                    reason = "Device support files for old iOS versions can be removed. Xcode copies them again when that device is connected."
+                    confidence = 0.75
                 case .spotifyCache, .slackCache, .zoomCache:
                     reason = "Application cache can be safely cleared. App will regenerate cache as needed."
                     confidence = 0.8

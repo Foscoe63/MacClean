@@ -21,7 +21,7 @@ struct ChatbotView: View {
                 
                 Spacer()
                 
-                Text(preferencesManager.preferences.aiServiceType == .lmStudio ? "LM Studio" : "Siri AI")
+                Text(preferencesManager.preferences.aiServiceType == .lmStudio ? "LM Studio" : "Apple Intelligence")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 8)

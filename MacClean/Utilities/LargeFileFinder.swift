@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct LargeFile: Identifiable {
+nonisolated struct LargeFile: Identifiable, Hashable, Sendable {
     let id: UUID
     let path: URL
     let size: Int64
@@ -23,121 +23,82 @@ struct LargeFile: Identifiable {
     }
 }
 
+/// Finds the biggest files in the user's folders so they can be reviewed and moved to the Trash.
 @Observable
 class LargeFileFinder {
     var largeFiles: [LargeFile] = []
     var isScanning = false
-    var progress: Double = 0.0
     var currentStatus = ""
     
     func findLargeFiles(in directories: [URL], minSize: Int64 = 100_000_000) async {
-        await MainActor.run {
-            isScanning = true
-            progress = 0.0
-            currentStatus = "Scanning for large files..."
-            largeFiles = []
-        }
+        isScanning = true
+        currentStatus = "Scanning for large files..."
+        largeFiles = []
         
-        var foundFiles: [LargeFile] = []
-        var totalFiles = 0
-        var processedFiles = 0
+        let found = await LargeFileScanner.scan(directories, minSize: minSize)
         
-        // Count total files first
-        for directory in directories {
-            let urls = await collectFileURLs(from: directory, keys: [.isRegularFileKey])
-            
-            for fileURL in urls {
-                guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
-                      let isRegularFile = resourceValues.isRegularFile,
-                      isRegularFile else {
-                    continue
-                }
-                totalFiles += 1
-            }
-        }
-        
-        // Scan for large files
-        for directory in directories {
-            let urls = await collectFileURLs(from: directory, keys: [.fileSizeKey, .isRegularFileKey, .contentModificationDateKey])
-            
-            for fileURL in urls {
-                if Task.isCancelled { return }
-                
-                guard let resourceValues = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .contentModificationDateKey]),
-                      let isRegularFile = resourceValues.isRegularFile,
-                      isRegularFile,
-                      let size = resourceValues.fileSize,
-                      Int64(size) >= minSize else {
-                    processedFiles += 1
-                    await MainActor.run {
-                        progress = Double(processedFiles) / Double(totalFiles)
-                    }
-                    continue
-                }
-                
-                let largeFile = LargeFile(
-                    path: fileURL,
-                    size: Int64(size),
-                    modifiedDate: resourceValues.contentModificationDate
-                )
-                foundFiles.append(largeFile)
-                
-                processedFiles += 1
-                await MainActor.run {
-                    progress = Double(processedFiles) / Double(totalFiles)
-                    currentStatus = "Found \(foundFiles.count) large files..."
-                }
-            }
-        }
-        
-        // Sort by size (largest first)
-        foundFiles.sort { $0.size > $1.size }
-        
-        await MainActor.run {
-            largeFiles = foundFiles
-            isScanning = false
-            progress = 1.0
-            currentStatus = "Found \(foundFiles.count) large files"
-        }
+        largeFiles = found
+        isScanning = false
+        let threshold = ByteCountFormatter.string(fromByteCount: minSize, countStyle: .file)
+        currentStatus = found.isEmpty
+            ? "No files larger than \(threshold)"
+            : "Found \(found.count) files larger than \(threshold)"
     }
     
-    private func collectFileURLs(from directory: URL, keys: [URLResourceKey]) async -> [URL] {
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var urls: [URL] = []
-                guard let enumerator = FileManager.default.enumerator(
-                    at: directory,
-                    includingPropertiesForKeys: keys,
-                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
-                ) else {
-                    continuation.resume(returning: [])
-                    return
-                }
-                
-                for case let fileURL as URL in enumerator {
-                    urls.append(fileURL)
-                }
-                
-                continuation.resume(returning: urls)
-            }
-        }
-    }
-    
-    func deleteFiles(_ files: [LargeFile]) async throws -> (deleted: Int, spaceFreed: Int64) {
-        var deleted = 0
-        var spaceFreed: Int64 = 0
+    /// Moves the chosen files to the Trash (never deletes permanently) and logs each one.
+    /// - Returns: How many files were moved and how much space they take up.
+    func moveToTrash(_ files: [LargeFile]) async -> (moved: Int, size: Int64) {
+        let outcome = await LargeFileScanner.trash(files)
+        DeletionLogManager.shared.logDeletions(outcome.logEntries)
         
-        for file in files {
-            do {
-                try FileManager.default.removeItem(at: file.path)
-                deleted += 1
-                spaceFreed += file.size
-            } catch {
-                print("Failed to delete \(file.path): \(error)")
-            }
-        }
-        
-        return (deleted, spaceFreed)
+        let trashedPaths = Set(outcome.logEntries.filter(\.success).map(\.filePath))
+        largeFiles.removeAll { trashedPaths.contains($0.path.path) }
+        return (outcome.itemsDeleted, outcome.spaceFreed)
     }
 }
 
+/// Background work for `LargeFileFinder`.
+nonisolated enum LargeFileScanner {
+    @concurrent
+    static func scan(_ directories: [URL], minSize: Int64) async -> [LargeFile] {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey]
+        var found: [LargeFile] = []
+        
+        for directory in directories {
+            // Skip package contents so apps and libraries show up as their own items, not thousands of parts
+            guard let enumerator = FileManager.default.enumerator(
+                at: directory,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                errorHandler: nil
+            ) else { continue }
+            
+            for case let fileURL as URL in enumerator {
+                if Task.isCancelled { return found.sorted { $0.size > $1.size } }
+                
+                guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
+                      values.isRegularFile == true else { continue }
+                
+                let size = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+                if size >= minSize {
+                    found.append(LargeFile(path: fileURL, size: size, modifiedDate: values.contentModificationDate))
+                }
+            }
+        }
+        
+        return found.sorted { $0.size > $1.size }
+    }
+    
+    @concurrent
+    static func trash(_ files: [LargeFile]) async -> DeletionOutcome {
+        var outcome = DeletionOutcome()
+        for file in files {
+            outcome.record(deleting: file.path, size: file.size, category: "Large Files") {
+                var resultingURL: NSURL?
+                try FileManager.default.trashItem(at: file.path, resultingItemURL: &resultingURL)
+                return resultingURL.map { $0 as URL }
+            }
+        }
+        return outcome
+    }
+}

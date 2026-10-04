@@ -146,7 +146,8 @@ class DuplicateFileFinder {
         for (_, group) in duplicates {
             for file in group where !filesToKeep.contains(file.id) {
                 do {
-                    try FileManager.default.removeItem(at: file.path)
+                    // Trash rather than delete so a wrong pick can be recovered
+                    try FileManager.default.trashItem(at: file.path, resultingItemURL: nil)
                     deleted += 1
                     spaceFreed += file.size
                 } catch {

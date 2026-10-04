@@ -40,7 +40,7 @@ struct AIServiceFactory {
                 model: preferences.lmStudioModel
             )
         case .siriAI:
-            return SiriAIService()
+            return AppleIntelligenceService()
         }
     }
 }

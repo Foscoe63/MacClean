@@ -49,6 +49,12 @@ class CleanupEngine {
             folder(.npmCache, ".npm"),
             folder(.cocoapodsCache, "Library/Caches/CocoaPods"),
             folder(.homebrewCache, "Library/Caches/Homebrew"),
+            folder(.swiftPMCache, "Library/Caches/org.swift.swiftpm"),
+            folder(.simulatorCaches, "Library/Developer/CoreSimulator/Caches"),
+            folder(.xcodeDeviceSupport, "Library/Developer/Xcode/iOS DeviceSupport"),
+            folder(.gradleCache, ".gradle/caches"),
+            folder(.pipCache, "Library/Caches/pip"),
+            folder(.yarnCache, "Library/Caches/Yarn"),
             // Application-specific
             folder(.spotifyCache, "Library/Caches/com.spotify.client"),
             folder(.slackCache, "Library/Caches/com.tinyspeck.slackmacgap"),

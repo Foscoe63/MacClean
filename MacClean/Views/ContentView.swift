@@ -19,6 +19,8 @@ struct ContentView: View {
     @State private var showDiskUsage = false
     @State private var showAnalytics = false
     @State private var showSystemHealth = false
+    @State private var showLargeFiles = false
+    @State private var hasFullDiskAccess = FullDiskAccess.isGranted
     @State private var lastCleanupSpaceFreed: Int64 = 0
     @State private var cleanupTask: Task<Void, Never>?
     private let notificationService = NotificationService.shared
@@ -96,6 +98,15 @@ struct ContentView: View {
                         .padding(.horizontal)
                     }
                     .padding(.top, 8)
+                }
+                
+                if !hasFullDiskAccess {
+                    FullDiskAccessBanner {
+                        FullDiskAccess.openSettings()
+                    } onRecheck: {
+                        hasFullDiskAccess = FullDiskAccess.isGranted
+                    }
+                    .padding(.horizontal)
                 }
                 
                 HStack {
@@ -237,6 +248,11 @@ struct ContentView: View {
             }
             .help("View Disk Usage")
             
+            Button(action: { showLargeFiles = true }) {
+                Image(systemName: "doc.text.magnifyingglass")
+            }
+            .help("Find Large Files")
+            
             Button(action: { showHistory = true }) {
                 Image(systemName: "clock.arrow.circlepath")
             }
@@ -284,6 +300,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showDiskUsage) {
             DiskUsageView()
+        }
+        .sheet(isPresented: $showLargeFiles) {
+            LargeFilesView()
         }
         .sheet(isPresented: $showAnalytics) {
             CleanupAnalyticsView()
@@ -564,6 +583,31 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+struct FullDiskAccessBanner: View {
+    let onOpenSettings: () -> Void
+    let onRecheck: () -> Void
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Full Disk Access is off", systemImage: "lock.shield")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Text("Without it, MacClean can't measure or clean Safari, Mail and some app caches, or empty the Trash.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Open Settings", action: onOpenSettings)
+                Button("Check Again", action: onRecheck)
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
     }
 }
 
